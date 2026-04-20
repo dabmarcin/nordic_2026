@@ -1,0 +1,8 @@
+.env
+data/
+ml_models/
+__pycache__/
+*.pyc
+.streamlit/
+.vscode/
+Thumbs.db
