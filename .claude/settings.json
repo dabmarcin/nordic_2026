@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python build_dataset.py)",
+      "Bash(python train_models.py)",
+      "Bash(python build_dataset.py --debug)",
+      "Bash(python fetch_h2h_cache.py --dry-run)",
+      "Bash(python nordic_scorer.py today)",
+      "Bash(python nordic_scorer.py tomorrow)"
     ]
   }
 }
