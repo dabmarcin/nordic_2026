@@ -19,6 +19,7 @@ from nordic_config import (
     MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK, MODELS_COMBINED,
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
+    MATCH_DETAILS_DIR,
 )
 
 # ── STAŁE ────────────────────────────────────────────────────────────────────
@@ -60,6 +61,114 @@ H2H_FALLBACK = {
     'h2h_matches_count': 0,
     'h2h_avg_corners':  9.5,
 }
+
+# ── PINNACLE ODDS ─────────────────────────────────────────────────────────────
+
+def get_pinnacle_odds(match_id, model_name, typ=None):
+    gpt_path = os.path.join(MATCH_DETAILS_DIR, f"gpt_{int(match_id)}.json")
+
+    if not os.path.isfile(gpt_path):
+        return None
+    try:
+        with open(gpt_path, encoding='utf-8') as f:
+            gpt = json.load(f)
+        pin = gpt.get("pinnacle_odds", {})
+
+        if model_name == "corners":
+            if typ and "under" in str(typ).lower():
+                return pin.get("corners_under_95")
+            else:
+                return pin.get("corners_over_95")
+        mapping = {
+            "result_home": pin.get("home"),
+            "result_away": pin.get("away"),
+            "btts":        pin.get("btts_yes"),
+            "over25":      pin.get("over25"),
+        }
+        return mapping.get(model_name)
+    except Exception:
+        return None
+
+
+def get_match_potencjaly(match_id):
+    gpt_path = os.path.join(MATCH_DETAILS_DIR, f'gpt_{int(match_id)}.json')
+    if not os.path.isfile(gpt_path):
+        return {}
+    try:
+        with open(gpt_path, encoding='utf-8') as f:
+            return json.load(f).get('potencjaly', {})
+    except Exception:
+        return {}
+
+
+def generate_gpt_predictions(match_id, home_name, away_name,
+                              kickoff, liga, date_str) -> list:
+    """Wczytuje gpt_tips z gpt_{match_id}.json i zwraca wiersze CSV z Model_type='gpt_pred'."""
+    gpt_path = os.path.join(MATCH_DETAILS_DIR, f'gpt_{int(match_id)}.json')
+    if not os.path.isfile(gpt_path):
+        return []
+    try:
+        with open(gpt_path, encoding='utf-8') as f:
+            gpt = json.load(f)
+    except Exception:
+        return []
+
+    tips = gpt.get('gpt_tips', [])
+    if not tips:
+        return []
+
+    pin = gpt.get('pinnacle_odds', {})
+    pin_by_kierunek = {
+        'home_win': pin.get('home'),
+        'away_win': pin.get('away'),
+        'draw':     pin.get('draw'),
+        'btts_yes': pin.get('btts_yes'),
+        'over':     pin.get('over25'),
+    }
+
+    rows = []
+    for tip in tips:
+        try:
+            kurs = tip.get('kurs')
+            if not kurs or float(kurs) <= 1.0:
+                continue
+            kurs = round(float(kurs), 2)
+
+            pinnacle = pin_by_kierunek.get(tip.get('kierunek', ''))
+            ev_str = ''
+            if pinnacle and pinnacle > 1.0:
+                p_pin = 1.0 / pinnacle
+                ev_str = f'{(p_pin * kurs - 1.0) * 100:+.1f}%'
+
+            rows.append({
+                'ID':            match_id,
+                'Data':          date_str,
+                'Godzina':       kickoff,
+                'Mecz':          f'{home_name} vs {away_name}',
+                'Liga':          liga.upper()[:5],
+                'Model':         'GPT FootyStats',
+                'Model_type':    'gpt_pred',
+                'Typ':           tip.get('typ', ''),
+                'Score[%]':      '',
+                'P_model':       '',
+                'Kurs':          kurs,
+                'Pinnacle_odds': round(float(pinnacle), 2) if pinnacle else '',
+                'EV[%]':         ev_str,
+                'Stake_PLN':     '',
+                'BTTS_pot':      '',
+                'Corners_pot':   '',
+                'O25_pot':       '',
+                'Wynik':         '',
+                'Rezultat':      '',
+                'Corners':       '',
+                'Kartki':        '',
+                'Profit_PLN':    '',
+                '_liga_key':     liga,
+            })
+        except Exception:
+            continue
+    return rows
+
 
 # ── MODELE ────────────────────────────────────────────────────────────────────
 
@@ -451,11 +560,12 @@ def main():
     combined_imp = combined_models[1] if combined_models[1] else {}
 
     # ── Przetwórz mecze
-    all_tips   = []
-    rejected   = []
-    warnings   = []
-    debug_acc  = []
-    debug_rej  = []
+    all_tips      = []
+    gpt_csv_rows  = []
+    rejected      = []
+    warnings      = []
+    debug_acc     = []
+    debug_rej     = []
 
     for _, row in nordic.iterrows():
         match_id  = int(row['id'])
@@ -517,6 +627,12 @@ def main():
             warnings.append(f'match_id={match_id}: błąd build_features ({e})')
             continue
 
+        # Potencjały z gpt JSON (dla kolumn CSV)
+        pot       = get_match_potencjaly(match_id)
+        btts_pot  = pot.get('btts_potential', '')
+        corn_pot  = pot.get('corners_o95_potential', '')
+        o25_pot   = pot.get('o25_potential', '')
+
         # Predykcje z modelu ligi i combined
         for model_type, (models_dict, imputors_dict) in [
             ('liga',     (lg_models_dict, lg_imputors_dict)),
@@ -533,25 +649,35 @@ def main():
                     continue
 
                 for pred in preds:
+                    pinnacle_val = get_pinnacle_odds(match_id, mn, typ=pred['typ'])
                     all_tips.append({
-                        'match_id':   match_id,
-                        'league':     league,
-                        'home':       home_name,
-                        'away':       away_name,
-                        'kickoff':    kickoff_str,
-                        'model':      mn,
-                        'model_type': model_type,
-                        'typ':        pred['typ'],
-                        'score':      pred['score'],
-                        'p':          pred['p'],
-                        'odds':       pred['odds'],
-                        'ev':         pred['ev'],
-                        'stake':      pred['stake'],
-                        'features':   pred['features'],
+                        'match_id':     match_id,
+                        'league':       league,
+                        'home':         home_name,
+                        'away':         away_name,
+                        'kickoff':      kickoff_str,
+                        'model':        mn,
+                        'model_type':   model_type,
+                        'typ':          pred['typ'],
+                        'score':        pred['score'],
+                        'p':            pred['p'],
+                        'odds':         pred['odds'],
+                        'pinnacle_odds': round(pinnacle_val, 2) if pinnacle_val else '',
+                        'ev':           pred['ev'],
+                        'stake':        pred['stake'],
+                        'features':     pred['features'],
                         'h2h_from_cache': h2h_from_cache,
-                        'h2h_count':  h2h['h2h_matches_count'],
-                        'last5_avail': last5_available,
+                        'h2h_count':    h2h['h2h_matches_count'],
+                        'last5_avail':  last5_available,
+                        'btts_pot':     btts_pot,
+                        'corners_pot':  corn_pot,
+                        'o25_pot':      o25_pot,
                     })
+
+        # GPT predictions
+        gpt_rows = generate_gpt_predictions(
+            match_id, home_name, away_name, kickoff_str, league, date_str)
+        gpt_csv_rows.extend(gpt_rows)
 
     # ── Odrzucone diag
     if rejected:
@@ -567,7 +693,7 @@ def main():
     else:
         hdr = (f"{'#':>3} │ {'Godz':5} │ {'Mecz':25} │ {'Liga':5} │ "
                f"{'Model':12} │ {'Typ':12} │ {'Score':5} │ {'Kurs':5} │ "
-               f"{'EV':7} │ {'Stake':5} │ MType")
+               f"{'Pin':5} │ {'EV':7} │ {'Stake':5} │ MType")
         sep = '─' * len(hdr)
         print('══════════════════════════════════════════════════════')
         print(hdr)
@@ -579,11 +705,29 @@ def main():
             model_label = {'result_home': 'Result Home', 'result_away': 'Result Away',
                            'btts': 'BTTS', 'over25': 'Over 2.5',
                            'corners': 'Corners'}.get(t['model'], t['model'])
+            pin_str = f"{t['pinnacle_odds']:5.2f}" if t['pinnacle_odds'] != '' else '  —  '
             print(
                 f"{i:>3} │ {t['kickoff']:5} │ {match_short:25} │ {lg_abbr:5} │ "
                 f"{model_label:12} │ {t['typ']:12} │ {t['score']:4.1f}% │ "
-                f"{t['odds']:5.2f} │ {t['ev']:+6.1f}% │ {t['stake']:5.1f} │ {t['model_type']}"
+                f"{t['odds']:5.2f} │ {pin_str} │ {t['ev']:+6.1f}% │ {t['stake']:5.1f} │ {t['model_type']}"
             )
+
+    # ── GPT Predictions console
+    if gpt_csv_rows:
+        print()
+        print('══════════════════════════════════════════════════════')
+        print('[GPT PREDICTIONS]')
+        gpt_hdr = (f"{'Godz':5} │ {'Mecz':28} │ {'Liga':5} │ "
+                   f"{'Typ':22} │ {'Kurs':5} │ {'Pin':5} │ {'EV':7} │ {'Pewność'}")
+        print(gpt_hdr)
+        print('─' * len(gpt_hdr))
+        for r in gpt_csv_rows:
+            mecz_short = str(r['Mecz'])[:28]
+            pin_str    = f"{r['Pinnacle_odds']:5.2f}" if r['Pinnacle_odds'] != '' else '  —  '
+            ev_str     = str(r['EV[%]']) if r['EV[%]'] else '      '
+            tip_short  = str(r['Typ'])[:22]
+            print(f"{r['Godzina']:5} │ {mecz_short:28} │ {r['Liga']:5} │ "
+                  f"{tip_short:22} │ {r['Kurs']:5.2f} │ {pin_str} │ {ev_str:7} │ {''}")
 
     # ── Zapis CSV per liga
     saved_paths = []
@@ -593,33 +737,45 @@ def main():
         'veikkausliiga': ('veikkausliiga', VEIKK_SCORER_DIR),
     }
     csv_cols = ['ID', 'Data', 'Godzina', 'Mecz', 'Liga', 'Model', 'Model_type',
-                'Typ', 'Score[%]', 'P_model', 'Kurs', 'EV[%]',
-                'Stake_PLN', 'Wynik', 'Rezultat', 'Corners', 'Kartki', 'Profit_PLN']
+                'Typ', 'Score[%]', 'P_model', 'Kurs', 'Pinnacle_odds', 'EV[%]',
+                'Stake_PLN', 'BTTS_pot', 'Corners_pot', 'O25_pot',
+                'Wynik', 'Rezultat', 'Corners', 'Kartki', 'Profit_PLN']
 
     for lg, (lg_name, scorer_dir) in league_abbr_map.items():
-        lg_tips = [t for t in all_tips if t['league'] == lg]
+        # Tylko combined dla ML (liga nie trafia do CSV)
+        lg_ml = [t for t in all_tips if t['league'] == lg and t['model_type'] == 'combined']
+        # GPT rows dla tej ligi
+        lg_gpt = [r for r in gpt_csv_rows if r.get('_liga_key') == lg]
+
         rows = []
-        for t in lg_tips:
+        for t in lg_ml:
             rows.append({
-                'ID':         t['match_id'],
-                'Data':       date_str,
-                'Godzina':    t['kickoff'],
-                'Mecz':       f"{t['home']} vs {t['away']}",
-                'Liga':       t['league'],
-                'Model':      t['model'],
-                'Model_type': t['model_type'],
-                'Typ':        t['typ'],
-                'Score[%]':   t['score'],
-                'P_model':    t['p'],
-                'Kurs':       t['odds'],
-                'EV[%]':      t['ev'],
-                'Stake_PLN':  t['stake'],
-                'Wynik':      '',
-                'Rezultat':   '',
-                'Corners':    '',
-                'Kartki':     '',
-                'Profit_PLN': '',
+                'ID':            t['match_id'],
+                'Data':          date_str,
+                'Godzina':       t['kickoff'],
+                'Mecz':          f"{t['home']} vs {t['away']}",
+                'Liga':          t['league'],
+                'Model':         t['model'],
+                'Model_type':    t['model_type'],
+                'Typ':           t['typ'],
+                'Score[%]':      t['score'],
+                'P_model':       t['p'],
+                'Kurs':          t['odds'],
+                'Pinnacle_odds': t['pinnacle_odds'],
+                'EV[%]':         t['ev'],
+                'Stake_PLN':     t['stake'],
+                'BTTS_pot':      t.get('btts_pot', ''),
+                'Corners_pot':   t.get('corners_pot', ''),
+                'O25_pot':       t.get('o25_pot', ''),
+                'Wynik':         '',
+                'Rezultat':      '',
+                'Corners':       '',
+                'Kartki':        '',
+                'Profit_PLN':    '',
             })
+        for r in lg_gpt:
+            rows.append({k: r[k] for k in csv_cols})
+
         if rows:
             out_df = pd.DataFrame(rows, columns=csv_cols)
             out_path = os.path.join(scorer_dir, f'{lg_name}_scorer_{date_str}.csv')

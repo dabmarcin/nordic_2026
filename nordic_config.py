@@ -136,6 +136,7 @@ ALLSV_SCORER_DIR  = os.path.join(TELEMETRY, "Allsvenskan scorer")
 ELITE_SCORER_DIR  = os.path.join(TELEMETRY, "Eliteserien scorer")
 VEIKK_SCORER_DIR  = os.path.join(TELEMETRY, "Veikkausliiga scorer")
 REPORTS_DIR       = os.path.join(DATA_DIR, "reports")
+MATCH_DETAILS_DIR = os.path.join(DATA_DIR, "match_details")
 MODELS_DIR        = os.path.join(SCRIPT_DIR, "ml_models")
 MODELS_ALLSV      = os.path.join(MODELS_DIR, "allsvenskan")
 MODELS_ELITE      = os.path.join(MODELS_DIR, "eliteserien")
@@ -148,7 +149,7 @@ for _dir in [
     DAILY_DIR, H2H_CACHE,
     ARTICLES_ALLSV, ARTICLES_ELITE, ARTICLES_VEIKK,
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
-    REPORTS_DIR,
+    REPORTS_DIR, MATCH_DETAILS_DIR,
     MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK, MODELS_COMBINED,
 ]:
     os.makedirs(_dir, exist_ok=True)

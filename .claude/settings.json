@@ -7,7 +7,17 @@
       "Bash(python build_dataset.py --debug)",
       "Bash(python fetch_h2h_cache.py --dry-run)",
       "Bash(python nordic_scorer.py today)",
-      "Bash(python nordic_scorer.py tomorrow)"
+      "Bash(python nordic_scorer.py tomorrow)",
+      "Bash(python -c \"import nordic_config; print\\('nordic_config OK'\\)\")",
+      "Bash(python -c \"import fetch_match_details; print\\('fetch_match_details OK'\\)\")",
+      "Bash(python -c \"import nordic_scorer; print\\('nordic_scorer OK'\\)\")",
+      "Bash(python fetch_match_details.py --tomorrow --force)",
+      "Bash(python fetch_match_details.py --today --force)",
+      "Bash(python fetch_match_details.py --date 2026-04-22 --force)",
+      "Bash(python -c \"import fetch_match_details; print\\('OK — brak błędów importu'\\)\")",
+      "Bash(python fetch_match_details.py --date 2026-04-21 --force)",
+      "Bash(python regen_gpt_tips.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('nordic_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK — brak błędów składni'\\)\")"
     ]
   }
 }
