@@ -17,7 +17,8 @@
       "Bash(python -c \"import fetch_match_details; print\\('OK — brak błędów importu'\\)\")",
       "Bash(python fetch_match_details.py --date 2026-04-21 --force)",
       "Bash(python regen_gpt_tips.py)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('nordic_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK — brak błędów składni'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('nordic_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK — brak błędów składni'\\)\")",
+      "Bash(python -m py_compile \"c:/Projects/nordic_2026/nordic_app.py\")"
     ]
   }
 }

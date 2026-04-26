@@ -136,6 +136,139 @@ def settle_match(df: pd.DataFrame, match_id, home_goals: int, away_goals: int,
     return df
 
 
+def normalize_typ(typ: str, mecz: str) -> str:
+    if not isinstance(typ, str) or not typ.strip():
+        return typ
+
+    t = typ.strip()
+    t_lower = t.lower()
+
+    if " + " in t:
+        return "Parlay"
+
+    if t_lower in ("over corners", "corners over"):
+        return "Corners Over 9.5"
+
+    m = re.match(r"corners?\s+(over|under)\s+([\d.]+)", t_lower)
+    if m:
+        direction = m.group(1).capitalize()
+        line = m.group(2)
+        return f"Corners {direction} {line}"
+
+    m = re.match(
+        r"(over|under)\s+([\d.]+)"
+        r"(?:\s+(?:goli|goals|bramek|gola|bramki|mål|maalia))?$",
+        t_lower)
+    if m:
+        direction = m.group(1).capitalize()
+        line = m.group(2)
+        return f"{direction} {line}"
+
+    if t_lower in ("btts yes", "btts tak", "btts – tak", "btts - tak", "btts yes + over 2.5"):
+        return "BTTS Yes"
+    if t_lower in ("btts no", "btts nie", "btts – nie", "btts - nie"):
+        return "BTTS No"
+    if t_lower.startswith("btts"):
+        return "BTTS Yes"
+
+    if re.search(r"double\s*chance\s*1x", t_lower):
+        return "1X"
+    if re.search(r"double\s*chance\s*x2", t_lower):
+        return "X2"
+    if re.search(r"double\s*chance\s*12", t_lower):
+        return "12"
+
+    teams = re.split(r"\s+(?:vs|-)?\s+", mecz, maxsplit=1, flags=re.IGNORECASE)
+    home = teams[0].strip().lower() if teams else ""
+    away = teams[1].strip().lower() if len(teams) > 1 else ""
+
+    dc_m = re.match(r"double\s*chance\s+(.+?)(?:\s+win[/\s]draw)?$", t_lower)
+    if dc_m:
+        team_mention = dc_m.group(1).strip()
+        if home and home in team_mention:
+            return "1X"
+        if away and away in team_mention:
+            return "X2"
+        return "1X"
+
+    win_draw_m = re.search(
+        r"wygra\s+lub\s+remis|win\s+or\s+draw|win/draw"
+        r"|vinner\s+eller\s+uavgjort|vinner\s+eller\s+oavgjort",
+        t_lower)
+    if win_draw_m:
+        if home and home in t_lower:
+            return "1X"
+        if away and away in t_lower:
+            return "X2"
+        return "1X"
+
+    win_m = re.search(
+        r"wygra|wins?(?!\s+or)|vinner(?!\s+eller)|vann|siegt|voittaa",
+        t_lower)
+    if win_m:
+        if home and home in t_lower:
+            return "1"
+        if away and away in t_lower:
+            return "2"
+        pre_win = t_lower[:win_m.start()].strip()
+        if home and home in pre_win:
+            return "1"
+        if away and away in pre_win:
+            return "2"
+        return "1"
+
+    if t_lower in ("remis", "draw", "x", "oavgjort"):
+        return "X"
+
+    if t_lower in ("1", "x", "2", "1x", "x2", "12"):
+        return t_lower.upper()
+
+    return t
+
+
+def apply_flat_stake(df: pd.DataFrame, stake: float) -> pd.DataFrame:
+    df = df.copy()
+    wynik = pd.to_numeric(df["Wynik"], errors="coerce")
+    kurs  = pd.to_numeric(df["Kurs"],  errors="coerce")
+    df["Stake_PLN"] = stake
+    df["Profit_PLN"] = float("nan")
+    df.loc[wynik == 1, "Profit_PLN"] = (kurs[wynik == 1] - 1) * stake
+    df.loc[wynik == 0, "Profit_PLN"] = -stake
+    return df
+
+
+def calc_stats_table(df: pd.DataFrame, group_col: str, stake: float) -> pd.DataFrame:
+    rows = []
+    for val in df[group_col].dropna().unique():
+        sub = df[df[group_col] == val].copy()
+        sub = apply_flat_stake(sub, stake)
+        wynik  = pd.to_numeric(sub["Wynik"],      errors="coerce")
+        kurs   = pd.to_numeric(sub["Kurs"],        errors="coerce")
+        profit = pd.to_numeric(sub["Profit_PLN"],  errors="coerce")
+        n      = len(sub)
+        n_won  = int(wynik.fillna(0).sum())
+        wr     = n_won / n if n else 0.0
+        tot_stake  = n * stake
+        tot_profit = profit.fillna(0).sum()
+        roi        = (tot_profit / tot_stake * 100) if tot_stake else 0.0
+        avg_k      = kurs.mean() if not kurs.empty else 0.0
+        rows.append({
+            group_col:     val,
+            "N":           n,
+            "Wygrane":     n_won,
+            "Win Rate":    f"{wr:.0%}",
+            "Śr. kurs":    f"{avg_k:.2f}",
+            "ROI":         f"{roi:+.1f}%",
+            "Profit":      f"{tot_profit:+.1f} PLN",
+            "_roi_raw":    roi,
+            "_profit_raw": tot_profit,
+        })
+    result = pd.DataFrame(rows)
+    if not result.empty and "_roi_raw" in result.columns:
+        result = result.sort_values("_roi_raw", ascending=False)
+        result = result.drop(columns=["_roi_raw", "_profit_raw"])
+    return result
+
 
 # ── ZAKŁADKI ──────────────────────────────────────────────────────────────────
 
@@ -577,88 +710,466 @@ with tabs[2]:
 # TAB 4 — STATYSTYKI
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[3]:
-    st.header("Statystyki i ROI")
+    st.header("📊 Statystyki i ROI")
 
+    # ── Wczytaj dane ─────────────────────────────
     df_all = get_all_scorer_files()
 
     if df_all.empty or "Wynik" not in df_all.columns:
+        st.info("Brak rozliczonych zakładów. "
+                "Rozlicz wyniki w zakładce Wyniki.")
+        st.stop()
+
+    df_settled = df_all[
+        pd.to_numeric(df_all["Wynik"], errors="coerce").isin([0, 1])
+    ].copy()
+
+    if df_settled.empty:
         st.info("Brak rozliczonych zakładów.")
+        st.stop()
+
+    # ── KONFIGURACJA STAWKI ───────────────────────
+    st.subheader("⚙️ Konfiguracja stawki")
+    cfg1, cfg2, cfg3 = st.columns(3)
+
+    bankroll = cfg1.number_input(
+        "Bankroll (PLN)",
+        min_value=100.0,
+        max_value=1_000_000.0,
+        value=1000.0,
+        step=100.0,
+        key="stats_bankroll")
+
+    stake = cfg2.number_input(
+        "Stawka (PLN)",
+        min_value=1.0,
+        max_value=bankroll,
+        value=min(100.0, bankroll),
+        step=10.0,
+        key="stats_stake")
+
+    pct = (stake / bankroll * 100) if bankroll else 0
+    cfg3.metric("% bankrollu", f"{pct:.1f}%")
+
+    st.caption(
+        f"Wszystkie zakłady rozliczane flat "
+        f"{stake:.0f} PLN (nadpisuje oryginalne stawki)")
+
+    st.divider()
+
+    # ── Normalizuj Typ ────────────────────────────
+    if "Typ" in df_settled.columns and "Mecz" in df_settled.columns:
+        df_settled["Typ_norm"] = df_settled.apply(
+            lambda r: normalize_typ(str(r["Typ"]), str(r.get("Mecz", ""))),
+            axis=1)
     else:
-        df_settled = df_all[
-            pd.to_numeric(df_all["Wynik"], errors="coerce").isin([0, 1])
-        ].copy()
+        df_settled["Typ_norm"] = df_settled.get("Typ", "")
 
-        if df_settled.empty:
-            st.info("Brak rozliczonych zakładów.")
+    df_flat = apply_flat_stake(df_settled, stake)
+
+    # ── BLOK 1 — KPI OGÓLNE ──────────────────────
+    wynik_all  = pd.to_numeric(df_flat["Wynik"],      errors="coerce")
+    kurs_all   = pd.to_numeric(df_flat["Kurs"],       errors="coerce")
+    profit_all = pd.to_numeric(df_flat["Profit_PLN"], errors="coerce")
+    n_all      = len(df_flat)
+    n_won_all  = int(wynik_all.fillna(0).sum())
+    wr_all     = n_won_all / n_all if n_all else 0
+    tot_stake  = n_all * stake
+    tot_profit = profit_all.fillna(0).sum()
+    roi_all    = (tot_profit / tot_stake * 100) if tot_stake else 0
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Zakłady",  n_all)
+    k2.metric("Wygrane",  n_won_all)
+    k3.metric("Win Rate", f"{wr_all:.1%}")
+    k4.metric("ROI",      f"{roi_all:+.1f}%")
+    k5.metric("Profit",   f"{tot_profit:+.1f} PLN")
+
+    st.divider()
+
+    # ── BLOK 2 — PER LIGA ────────────────────────
+    st.subheader("🏆 Per liga")
+
+    liga_col = next(
+        (c for c in ["league", "_liga", "Liga"] if c in df_flat.columns), None)
+
+    if liga_col:
+        df_liga_stats = calc_stats_table(df_flat, liga_col, stake)
+        df_liga_stats = df_liga_stats.rename(columns={liga_col: "Liga"})
+        st.dataframe(df_liga_stats, use_container_width=True, hide_index=True)
+    else:
+        st.info("Brak kolumny liga.")
+
+    st.divider()
+
+    # ── BLOK 3 — ML vs GPT ───────────────────────
+    st.subheader("🤖 ML (combined) vs GPT FootyStats")
+
+    if "Model_type" in df_flat.columns:
+        df_mt = calc_stats_table(df_flat, "Model_type", stake)
+        df_mt = df_mt.rename(columns={"Model_type": "Model"})
+        st.dataframe(df_mt, use_container_width=True, hide_index=True)
+
+        df_mt_raw = []
+        for mt in df_flat["Model_type"].dropna().unique():
+            sub = apply_flat_stake(df_flat[df_flat["Model_type"] == mt], stake)
+            profit = pd.to_numeric(sub["Profit_PLN"], errors="coerce").fillna(0).sum()
+            ts = len(sub) * stake
+            roi = (profit / ts * 100) if ts else 0
+            df_mt_raw.append({"Model": mt, "ROI": roi})
+        if df_mt_raw:
+            chart_mt = alt.Chart(
+                pd.DataFrame(df_mt_raw)
+            ).mark_bar().encode(
+                x=alt.X("Model:N"),
+                y=alt.Y("ROI:Q", title="ROI %"),
+                color=alt.condition(
+                    alt.datum.ROI >= 0,
+                    alt.value("#2ecc71"),
+                    alt.value("#e74c3c")),
+                tooltip=["Model", "ROI"]
+            ).properties(height=180)
+            st.altair_chart(chart_mt, use_container_width=True)
+    else:
+        st.info("Brak kolumny Model_type.")
+
+    st.divider()
+
+    # ── BLOK 4 — PER TYP (znormalizowany) ────────
+    st.subheader("🎯 Per typ zakładu (znormalizowany)")
+
+    df_typ_stats = calc_stats_table(df_flat, "Typ_norm", stake)
+    df_typ_stats = df_typ_stats.rename(columns={"Typ_norm": "Typ"})
+    st.dataframe(df_typ_stats, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── BLOK 5 — PER PRZEDZIAŁ KURSOWY ───────────
+    st.subheader("💰 Per przedział kursowy")
+
+    kurs_num = pd.to_numeric(df_flat["Kurs"], errors="coerce")
+    bins   = [1.0, 1.30, 1.50, 1.75, 2.00, 99.0]
+    labels = ["1.01–1.30", "1.31–1.50", "1.51–1.75", "1.76–2.00", "2.00+"]
+    df_flat["_kurs_bin"] = pd.cut(kurs_num, bins=bins, labels=labels, right=True)
+
+    df_bin_rows = []
+    for label in labels:
+        sub = apply_flat_stake(df_flat[df_flat["_kurs_bin"] == label], stake)
+        if sub.empty:
+            continue
+        wynik  = pd.to_numeric(sub["Wynik"],      errors="coerce")
+        profit = pd.to_numeric(sub["Profit_PLN"], errors="coerce")
+        n   = len(sub)
+        nw  = int(wynik.fillna(0).sum())
+        wr  = nw / n if n else 0
+        ts  = n * stake
+        tp  = profit.fillna(0).sum()
+        roi = (tp / ts * 100) if ts else 0
+        avg_k = pd.to_numeric(sub["Kurs"], errors="coerce").mean()
+        df_bin_rows.append({
+            "Przedział": label,
+            "N":         n,
+            "Wygrane":   nw,
+            "Win Rate":  f"{wr:.0%}",
+            "Śr. kurs":  f"{avg_k:.2f}",
+            "ROI":       f"{roi:+.1f}%",
+            "Profit":    f"{tp:+.1f} PLN",
+            "_roi":      roi,
+        })
+
+    if df_bin_rows:
+        df_bins = pd.DataFrame(df_bin_rows)
+        st.dataframe(
+            df_bins.drop(columns=["_roi"]),
+            use_container_width=True,
+            hide_index=True)
+
+        chart_bin = alt.Chart(df_bins).mark_bar(
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X("Przedział:N", sort=labels, title="Przedział kursowy"),
+            y=alt.Y("_roi:Q", title="ROI %"),
+            color=alt.condition(
+                alt.datum._roi >= 0,
+                alt.value("#2ecc71"),
+                alt.value("#e74c3c")),
+            tooltip=["Przedział", "N", "_roi"]
+        ).properties(height=200)
+        st.altair_chart(chart_bin, use_container_width=True)
+
+    st.divider()
+
+    # ── BLOK 6 — TRAFNOŚĆ GPT PER TYP ────────────
+    st.subheader("📰 Trafność GPT FootyStats per typ")
+
+    if "Model_type" in df_flat.columns:
+        df_gpt = apply_flat_stake(
+            df_flat[df_flat["Model_type"] == "gpt_pred"].copy(), stake)
+
+        if df_gpt.empty:
+            st.info("Brak zakładów GPT.")
         else:
-            roi_data = calc_roi(df_settled)
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Zakłady",  roi_data.get("n", 0))
-            k2.metric("Win Rate", f"{roi_data.get('win_rate', 0):.1%}")
-            k3.metric("ROI",      f"{roi_data.get('roi_pct', 0):+.1f}%")
-            k4.metric("Profit",   f"{roi_data.get('total_profit', 0):+.1f} PLN")
+            df_gpt_rows = []
+            for typ in df_gpt["Typ_norm"].dropna().unique():
+                sub    = df_gpt[df_gpt["Typ_norm"] == typ]
+                wynik  = pd.to_numeric(sub["Wynik"],      errors="coerce")
+                kurs   = pd.to_numeric(sub["Kurs"],       errors="coerce")
+                profit = pd.to_numeric(sub["Profit_PLN"], errors="coerce")
+                n   = len(sub)
+                nw  = int(wynik.fillna(0).sum())
+                acc = nw / n if n else 0
+                ts  = n * stake
+                tp  = profit.fillna(0).sum()
+                roi = (tp / ts * 100) if ts else 0
+                avg_k = kurs.mean()
+                df_gpt_rows.append({
+                    "Typ":      typ,
+                    "N":        n,
+                    "Trafień":  nw,
+                    "Accuracy": f"{acc:.0%}",
+                    "Śr. kurs": f"{avg_k:.2f}",
+                    "ROI":      f"{roi:+.1f}%",
+                    "_roi":     roi,
+                })
 
-            st.subheader("ROI per liga")
-            liga_col = "league" if "league" in df_settled.columns else (
-                "_liga" if "_liga" in df_settled.columns else None
-            )
-            if liga_col:
-                liga_stats = []
-                for liga in df_settled[liga_col].unique():
-                    sub = df_settled[df_settled[liga_col] == liga]
-                    r = calc_roi(sub)
-                    r["Liga"] = liga
-                    liga_stats.append(r)
-                if liga_stats:
-                    df_liga = pd.DataFrame(liga_stats)
-                    st.dataframe(
-                        df_liga[["Liga", "n", "win_rate", "avg_kurs", "roi_pct", "total_profit"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+            df_gpt_tab = (pd.DataFrame(df_gpt_rows)
+                .sort_values("_roi", ascending=False)
+                .drop(columns=["_roi"]))
+            st.dataframe(df_gpt_tab, use_container_width=True, hide_index=True)
+    else:
+        st.info("Brak kolumny Model_type.")
 
-            st.subheader("ROI per model")
-            if "Model_type" in df_settled.columns:
-                model_stats = []
-                for model in df_settled["Model_type"].unique():
-                    sub = df_settled[df_settled["Model_type"] == model]
-                    r = calc_roi(sub)
-                    r["Model_type"] = model
-                    model_stats.append(r)
-                if model_stats:
-                    df_model = pd.DataFrame(model_stats)
-                    st.dataframe(
-                        df_model[["Model_type", "n", "win_rate", "avg_kurs", "roi_pct", "total_profit"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+    st.divider()
 
-            st.subheader("Liga vs Combined")
-            if "Model_type" in df_settled.columns:
-                type_stats = []
-                for mt in ["liga", "combined"]:
-                    sub = df_settled[df_settled["Model_type"] == mt]
-                    if not sub.empty:
-                        r = calc_roi(sub)
-                        r["Model_type"] = mt
-                        type_stats.append(r)
-                if type_stats:
-                    df_type = pd.DataFrame(type_stats)
-                    st.dataframe(
-                        df_type[["Model_type", "n", "win_rate", "roi_pct", "total_profit"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+    # ── BLOK 7 — ROZKŁAD MECZOWY ──────────────────
+    st.subheader("⚽ Rozkład wyników meczowych")
 
-            st.subheader("Wszystkie zakłady")
-            cols_all = [
-                c for c in [
-                    "Data", "Godzina", "Mecz", "league", "Model", "Model_type",
-                    "Typ", "Score[%]", "Kurs", "Stake_PLN", "Wynik", "Profit_PLN",
-                ]
-                if c in df_settled.columns
-            ]
-            st.dataframe(df_settled[cols_all], use_container_width=True, hide_index=True)
+    def parse_rezultat(r):
+        try:
+            parts = str(r).split(":")
+            return int(parts[0]), int(parts[1])
+        except Exception:
+            return None, None
+
+    if "Rezultat" in df_settled.columns:
+        df_res = df_settled.copy()
+        df_res[["_hg", "_ag"]] = df_res["Rezultat"].apply(
+            lambda r: pd.Series(parse_rezultat(r)))
+        df_res["_total_goals"] = (
+            df_res["_hg"].fillna(0) + df_res["_ag"].fillna(0))
+        df_res["_btts_fact"] = (
+            (df_res["_hg"] > 0) & (df_res["_ag"] > 0)).astype(int)
+        df_res["_over25_fact"] = (df_res["_total_goals"] > 2.5).astype(int)
+        corners_num = pd.to_numeric(
+            df_res.get("Corners", pd.Series(dtype=float)), errors="coerce")
+        df_res["_over95c_fact"] = (corners_num > 9.5).astype(int)
+
+        df_matches = df_res.drop_duplicates(subset=["ID"])
+
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        mc1.metric("Meczów",       len(df_matches))
+        mc2.metric("Śr. gole",     f"{df_matches['_total_goals'].mean():.2f}")
+        mc3.metric("BTTS %",       f"{df_matches['_btts_fact'].mean():.0%}")
+        mc4.metric("Over 2.5 %",   f"{df_matches['_over25_fact'].mean():.0%}")
+        mc5.metric("Corners O9.5 %", f"{df_matches['_over95c_fact'].mean():.0%}")
+
+        corners_mean = corners_num.mean()
+        kartki_mean  = pd.to_numeric(
+            df_res.get("Kartki", pd.Series(dtype=float)), errors="coerce").mean()
+        if pd.notna(corners_mean) or pd.notna(kartki_mean):
+            mc6, mc7 = st.columns(2)
+            if pd.notna(corners_mean):
+                mc6.metric("Śr. corners", f"{corners_mean:.1f}")
+            if pd.notna(kartki_mean):
+                mc7.metric("Śr. kartki",  f"{kartki_mean:.1f}")
+
+        if liga_col and liga_col in df_res.columns:
+            st.write("**Per liga:**")
+            liga_res_rows = []
+            for liga in df_res[liga_col].dropna().unique():
+                sub = df_res[df_res[liga_col] == liga].drop_duplicates(subset=["ID"])
+                if sub.empty:
+                    continue
+                liga_res_rows.append({
+                    "Liga":          liga,
+                    "Meczów":        len(sub),
+                    "Śr. gole":      f"{sub['_total_goals'].mean():.2f}",
+                    "BTTS %":        f"{sub['_btts_fact'].mean():.0%}",
+                    "Over 2.5 %":    f"{sub['_over25_fact'].mean():.0%}",
+                    "O9.5 Corners %": f"{sub['_over95c_fact'].mean():.0%}",
+                })
+            if liga_res_rows:
+                st.dataframe(
+                    pd.DataFrame(liga_res_rows),
+                    use_container_width=True,
+                    hide_index=True)
+    else:
+        st.info("Brak kolumny Rezultat — "
+                "rozlicz wyniki aby zobaczyć statystyki.")
+
+    st.divider()
+
+    # ── BLOK 8 — EQUITY CURVE ────────────────────
+    st.subheader("📈 Equity curve i dzienny profit")
+
+    if "Data" in df_flat.columns:
+        df_eq = df_flat.copy()
+        df_eq["Profit_PLN"] = pd.to_numeric(
+            df_eq["Profit_PLN"], errors="coerce").fillna(0)
+        df_eq = df_eq.sort_values("Data")
+        df_eq["cum_profit"]   = df_eq["Profit_PLN"].cumsum()
+        df_eq["bankroll_val"] = bankroll + df_eq["cum_profit"]
+
+        df_eq["peak"]     = df_eq["bankroll_val"].cummax()
+        df_eq["drawdown"] = df_eq["bankroll_val"] - df_eq["peak"]
+        max_dd = df_eq["drawdown"].min()
+
+        dd1, dd2 = st.columns(2)
+        dd1.metric("Końcowy bankroll",
+                   f"{bankroll + tot_profit:.1f} PLN",
+                   delta=f"{tot_profit:+.1f} PLN")
+        dd2.metric("Max drawdown", f"{max_dd:.1f} PLN")
+
+        chart_eq = alt.Chart(df_eq).mark_line(
+            point=True, color="#3498db"
+        ).encode(
+            x=alt.X("Data:T", title="Data"),
+            y=alt.Y("bankroll_val:Q", title="Bankroll (PLN)"),
+            tooltip=["Data", "bankroll_val", "cum_profit"]
+        ).properties(height=250, title="Equity Curve")
+        st.altair_chart(chart_eq, use_container_width=True)
+
+        df_day = (df_eq.groupby("Data")["Profit_PLN"].sum().reset_index())
+        df_day.columns = ["Data", "Profit"]
+        bar_day = alt.Chart(df_day).mark_bar(
+            cornerRadiusTopLeft=3,
+            cornerRadiusTopRight=3
+        ).encode(
+            x=alt.X("Data:T", title="Data"),
+            y=alt.Y("Profit:Q", title="Profit dzienny (PLN)"),
+            color=alt.condition(
+                alt.datum.Profit >= 0,
+                alt.value("#2ecc71"),
+                alt.value("#e74c3c")),
+            tooltip=["Data", "Profit"]
+        ).properties(height=180, title="Dzienny Profit")
+        st.altair_chart(bar_day, use_container_width=True)
+    else:
+        st.info("Brak kolumny Data.")
+
+    st.divider()
+
+    # ── PEŁNA TABELA ──────────────────────────────
+    st.subheader("📋 Wszystkie zakłady")
+
+    f1, f2, f3 = st.columns(3)
+    filter_liga = f1.multiselect(
+        "Liga",
+        df_flat[liga_col].dropna().unique().tolist() if liga_col else [],
+        default=[],
+        key="stats_filter_liga")
+    filter_mt = f2.multiselect(
+        "Model",
+        df_flat["Model_type"].dropna().unique().tolist()
+        if "Model_type" in df_flat.columns else [],
+        default=[],
+        key="stats_filter_mt")
+    filter_typ = f3.multiselect(
+        "Typ (znorm.)",
+        df_flat["Typ_norm"].dropna().unique().tolist()
+        if "Typ_norm" in df_flat.columns else [],
+        default=[],
+        key="stats_filter_typ")
+
+    df_table = df_flat.copy()
+    if filter_liga and liga_col:
+        df_table = df_table[df_table[liga_col].isin(filter_liga)]
+    if filter_mt and "Model_type" in df_table.columns:
+        df_table = df_table[df_table["Model_type"].isin(filter_mt)]
+    if filter_typ and "Typ_norm" in df_table.columns:
+        df_table = df_table[df_table["Typ_norm"].isin(filter_typ)]
+
+    cols_table = [c for c in [
+        "Data", "Godzina", "Mecz",
+        liga_col if liga_col else "Liga",
+        "Model_type", "Typ", "Typ_norm",
+        "Kurs", "Wynik", "Profit_PLN",
+    ] if c and c in df_table.columns]
+
+    st.dataframe(df_table[cols_table], use_container_width=True, hide_index=True)
+
+    # ── EKSPORT JSON ──────────────────────────────
+    _REPORTS_DIR = os.path.join(SCRIPT_DIR, "data", "reports")
+    os.makedirs(_REPORTS_DIR, exist_ok=True)
+
+    _lv = locals()
+
+    def _recs(name, cols=None):
+        df = _lv.get(name)
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return []
+        if cols:
+            df = df[[c for c in cols if c in df.columns]]
+        return json.loads(df.to_json(
+            orient="records", force_ascii=False, date_format="iso"))
+
+    def _matches_summary():
+        dm = _lv.get("df_matches")
+        if not isinstance(dm, pd.DataFrame) or dm.empty:
+            return {}
+        return {
+            "meczów":     int(len(dm)),
+            "śr_gole":    round(float(dm["_total_goals"].mean()), 2),
+            "btts_pct":   round(float(dm["_btts_fact"].mean()), 4),
+            "over25_pct": round(float(dm["_over25_fact"].mean()), 4),
+            "over95c_pct": round(float(dm["_over95c_fact"].mean()), 4),
+        }
+
+    _fname = f"nordic_stats_{datetime.now().strftime('%Y%m%d')}.json"
+    _fpath = os.path.join(_REPORTS_DIR, _fname)
+
+    _report = {
+        "generated_at": datetime.now().isoformat(),
+        "config": {
+            "bankroll": bankroll,
+            "stake":    stake,
+        },
+        "kpi": {
+            "zakłady":    n_all,
+            "wygrane":    n_won_all,
+            "win_rate":   round(wr_all, 4),
+            "roi_pct":    round(roi_all, 2),
+            "profit_pln": round(tot_profit, 2),
+        },
+        "per_liga":     _recs("df_liga_stats"),
+        "per_model":    _recs("df_mt"),
+        "per_typ":      _recs("df_typ_stats"),
+        "per_kurs_bin": _recs("df_bins", cols=[
+            "Przedział", "N", "Wygrane", "Win Rate",
+            "Śr. kurs", "ROI", "Profit"]),
+        "gpt_per_typ":  _recs("df_gpt_tab"),
+        "rozkład_meczowy": _matches_summary(),
+        "equity_curve": _recs("df_eq", cols=[
+            "Data", "Profit_PLN", "cum_profit",
+            "bankroll_val"]),
+        "tabela": _recs("df_table", cols=cols_table),
+    }
+
+    _json_str   = json.dumps(_report, ensure_ascii=False, indent=2, default=str)
+    _json_bytes = _json_str.encode("utf-8")
+
+    with open(_fpath, "w", encoding="utf-8") as _f:
+        _f.write(_json_str)
+
+    st.caption(f"Raport zapisany: `{_fpath}`")
+
+    st.download_button(
+        "⬇️ Pobierz JSON",
+        data=_json_bytes,
+        file_name=_fname,
+        mime="application/json",
+        key="stats_dl_json")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
