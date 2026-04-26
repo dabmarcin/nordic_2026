@@ -452,10 +452,22 @@ def main():
                     or cached.get('status', '')
                 )
                 if str(status).lower() != 'incomplete':
-                    print(f'  ⏭  match_{mid} → już w cache (complete)')
-                    n_skipped += 1
-                    time.sleep(DELAY)
-                    continue
+                    # Odśwież jeśli brak pliku gpt lub brak gpt_tips
+                    gpt_missing = not os.path.isfile(gpt_path)
+                    if not gpt_missing:
+                        try:
+                            with open(gpt_path, encoding='utf-8') as fg:
+                                gpt_cached = json.load(fg)
+                            gpt_missing = not gpt_cached.get('gpt_tips')
+                        except Exception:
+                            gpt_missing = True
+                    if not gpt_missing:
+                        print(f'  ⏭  match_{mid} → już w cache (complete)')
+                        n_skipped += 1
+                        time.sleep(DELAY)
+                        continue
+                    else:
+                        print(f'  🔄 match_{mid} → brak gpt_tips, odświeżam...')
                 else:
                     was_incomplete = True
             except Exception:

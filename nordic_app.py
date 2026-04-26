@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta
 
 import altair as alt
@@ -213,9 +214,9 @@ with tabs[0]:
                 .str.replace("%", "").str.replace("+", "")
                 .pipe(pd.to_numeric, errors="coerce")
             )
-            df_show = df_show[ev_num >= min_ev]
+            is_gpt = df_show.get("Model_type", pd.Series()).astype(str) == "gpt_pred"
+            df_show = df_show[is_gpt | (ev_num >= min_ev)]
         if "Score[%]" in df_show.columns:
-            # Score filtr pomija wiersze gpt_pred (mają puste Score)
             score_num = pd.to_numeric(df_show["Score[%]"], errors="coerce")
             is_gpt    = df_show.get("Model_type", pd.Series()).astype(str) == "gpt_pred"
             df_show   = df_show[is_gpt | (score_num >= min_score)]
@@ -483,6 +484,22 @@ with tabs[2]:
         if df.empty:
             st.warning("Pusty plik.")
         else:
+            try:
+                from online_settle import settle_daily_scorer as _settle_api
+                _has_api = True
+            except ImportError:
+                _has_api = False
+
+            if _has_api:
+                if st.button("Pobierz z API i rozlicz", key="api_settle"):
+                    with st.spinner("Pobieram wyniki z API..."):
+                        n, msg = _settle_api(selected)
+                    if n > 0:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.info(msg)
+
             if "Wynik" in df.columns:
                 mask_pending = df["Wynik"].isna() | (
                     df["Wynik"].astype(str).str.strip().isin(["", "nan"])
@@ -531,7 +548,7 @@ with tabs[2]:
                 cols_s = [
                     c for c in [
                         "Godzina", "Mecz", "Model", "Model_type", "Typ",
-                        "Kurs", "Stake_PLN", "Wynik", "Profit_PLN",
+                        "Kurs", "Stake_PLN", "Wynik", "Rezultat", "Corners", "Kartki", "Profit_PLN",
                     ]
                     if c in settled.columns
                 ]
@@ -544,11 +561,16 @@ with tabs[2]:
                     profit = pd.to_numeric(
                         settled.get("Profit_PLN", pd.Series()), errors="coerce"
                     ).sum()
-                    m1, m2, m3 = st.columns(3)
+                    avg_kurs = pd.to_numeric(
+                        settled.get("Kurs", pd.Series()), errors="coerce"
+                    ).mean()
+                    m1, m2, m3, m4 = st.columns(4)
                     m1.metric("Wyniki", f"✅{n_won} ❌{n_lost}")
                     m2.metric("Profit", f"{profit:+.2f} PLN")
                     if len(settled) > 0:
                         m3.metric("Win Rate", f"{n_won/len(settled):.0%}")
+                    if pd.notna(avg_kurs):
+                        m4.metric("Śr. kurs", f"{avg_kurs:.2f}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -596,17 +618,17 @@ with tabs[3]:
                     )
 
             st.subheader("ROI per model")
-            if "Model" in df_settled.columns:
+            if "Model_type" in df_settled.columns:
                 model_stats = []
-                for model in df_settled["Model"].unique():
-                    sub = df_settled[df_settled["Model"] == model]
+                for model in df_settled["Model_type"].unique():
+                    sub = df_settled[df_settled["Model_type"] == model]
                     r = calc_roi(sub)
-                    r["Model"] = model
+                    r["Model_type"] = model
                     model_stats.append(r)
                 if model_stats:
                     df_model = pd.DataFrame(model_stats)
                     st.dataframe(
-                        df_model[["Model", "n", "win_rate", "avg_kurs", "roi_pct", "total_profit"]],
+                        df_model[["Model_type", "n", "win_rate", "avg_kurs", "roi_pct", "total_profit"]],
                         use_container_width=True,
                         hide_index=True,
                     )
@@ -739,17 +761,31 @@ with tabs[5]:
     col_d1, col_d2 = st.columns(2)
 
     with col_d1:
-        st.caption("Pobiera mecze na dziś i jutro")
+        st.caption("Pobiera mecze na dziś i jutro + szczegóły meczów GPT")
         if st.button("🔄 Pobierz dane dzienne"):
-            with st.spinner("Pobieranie..."):
+            with st.spinner("Pobieranie listy meczów..."):
                 rc, out, err = run_script("fetch_data.py", ["--daily"])
             if rc == 0:
-                st.success("Dane pobrane!")
+                st.success("Lista meczów pobrana!")
+                with st.expander("Log fetch_data"):
+                    st.code(out[-2000:])
+                with st.spinner("Pobieranie szczegółów i analiz GPT (dziś)..."):
+                    rc2, out2, err2 = run_script("fetch_match_details.py", ["--today"])
+                with st.spinner("Pobieranie szczegółów i analiz GPT (jutro)..."):
+                    rc3, out3, err3 = run_script("fetch_match_details.py", ["--tomorrow"])
+                if rc2 == 0 and rc3 == 0:
+                    st.success("Szczegóły meczów pobrane!")
+                else:
+                    st.warning("Szczegóły: częściowy błąd — sprawdź logi")
+                with st.expander("Log fetch_match_details (dziś)"):
+                    st.code(out2[-1000:])
+                with st.expander("Log fetch_match_details (jutro)"):
+                    st.code(out3[-1000:])
             else:
-                st.error("Błąd")
+                st.error("Błąd pobierania listy meczów")
                 st.code(err[:300])
-            with st.expander("Log"):
-                st.code(out[-2000:])
+                with st.expander("Log"):
+                    st.code(out[-2000:])
 
     with col_d2:
         st.caption("Pobiera historyczne sezony")
@@ -785,7 +821,8 @@ with tabs[5]:
     if st.button("▶ Generuj predykcje", type="primary"):
         args = [day_score, "--debug"]
         if league_score:
-            args += ["--league", ",".join(league_score)]
+            for l in league_score:
+                args += ["--league", l]
         with st.spinner(f"Generuję predykcje ({day_score})..."):
             rc, out, err = run_script("nordic_scorer.py", args)
         if rc == 0:

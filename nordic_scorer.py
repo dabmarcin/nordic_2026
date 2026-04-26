@@ -499,7 +499,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('day', choices=['today', 'tomorrow'])
     parser.add_argument('--debug',  action='store_true')
-    parser.add_argument('--league', choices=list(ACTIVE_LEAGUES.keys()), default=None)
+    parser.add_argument('--league', choices=list(ACTIVE_LEAGUES.keys()), default=None, nargs='+')
     args = parser.parse_args()
 
     for d in [ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR, REPORTS_DIR]:
@@ -524,7 +524,7 @@ def main():
     # Filtruj ligi nordic
     comp_filter = list(ACTIVE_LEAGUES.values())
     if args.league:
-        comp_filter = [ACTIVE_LEAGUES[args.league]]
+        comp_filter = [ACTIVE_LEAGUES[l] for l in args.league]
     nordic = daily_df[daily_df['competition_id'].isin(comp_filter)].copy()
 
     id_to_league = {v: k for k, v in ACTIVE_LEAGUES.items()}
