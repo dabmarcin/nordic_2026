@@ -142,6 +142,11 @@ MODELS_ALLSV      = os.path.join(MODELS_DIR, "allsvenskan")
 MODELS_ELITE      = os.path.join(MODELS_DIR, "eliteserien")
 MODELS_VEIKK      = os.path.join(MODELS_DIR, "veikkausliiga")
 MODELS_COMBINED   = os.path.join(MODELS_DIR, "nordic_combined")
+CURRENT_DIR       = os.path.join(DATA_DIR, "current")
+TEAMS_HIST_DIR    = os.path.join(DATA_DIR, "teams_historical")
+TEAMS_ALLSV_HIST  = os.path.join(TEAMS_HIST_DIR, "allsvenskan")
+TEAMS_ELITE_HIST  = os.path.join(TEAMS_HIST_DIR, "eliteserien")
+TEAMS_VEIKK_HIST  = os.path.join(TEAMS_HIST_DIR, "veikkausliiga")
 
 # Utwórz wszystkie katalogi jeśli nie istnieją
 for _dir in [
@@ -151,5 +156,7 @@ for _dir in [
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
     REPORTS_DIR, MATCH_DETAILS_DIR,
     MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK, MODELS_COMBINED,
+    CURRENT_DIR,
+    TEAMS_ALLSV_HIST, TEAMS_ELITE_HIST, TEAMS_VEIKK_HIST,
 ]:
     os.makedirs(_dir, exist_ok=True)

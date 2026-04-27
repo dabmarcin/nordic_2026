@@ -16,10 +16,10 @@ from nordic_config import (
     API_KEY, BASE_URL,
     ALLSVENSKAN_DIR, ELITESERIEN_DIR, VEIKKAUSLIIGA_DIR,
     DAILY_DIR, H2H_CACHE, REPORTS_DIR,
-    MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK, MODELS_COMBINED,
+    MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK,
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
-    MATCH_DETAILS_DIR,
+    MATCH_DETAILS_DIR, CURRENT_DIR,
 )
 
 # ── STAŁE ────────────────────────────────────────────────────────────────────
@@ -31,8 +31,8 @@ ACTIVE_LEAGUES = {
 }
 
 LEAGUE_DIRS = {
-    'allsvenskan':   (ALLSVENSKAN_DIR,  MODELS_ALLSV,  ALLSV_SCORER_DIR),
-    'eliteserien':   (ELITESERIEN_DIR,  MODELS_ELITE,  ELITE_SCORER_DIR),
+    'allsvenskan':   (ALLSVENSKAN_DIR,   MODELS_ALLSV, ALLSV_SCORER_DIR),
+    'eliteserien':   (ELITESERIEN_DIR,   MODELS_ELITE, ELITE_SCORER_DIR),
     'veikkausliiga': (VEIKKAUSLIIGA_DIR, MODELS_VEIKK, VEIKK_SCORER_DIR),
 }
 
@@ -234,6 +234,83 @@ if '--test-normalize' in sys.argv:
     print()
     print('Wszystkie OK!' if all_ok else 'BŁĘDY — sprawdź funkcję!')
     sys.exit(0)
+
+
+def load_current_teams_lookup() -> dict:
+    lookup = {}
+    for sid, fname in [
+        (ALLSVENSKAN_2026_ID,   "allsvenskan_teams_2026.csv"),
+        (ELITESERIEN_2026_ID,   "eliteserien_teams_2026.csv"),
+        (VEIKKAUSLIIGA_2026_ID, "veikkausliiga_teams_2026.csv"),
+    ]:
+        path = os.path.join(CURRENT_DIR, fname)
+        if not os.path.isfile(path):
+            print(f"[WARN] Brak current teams: {path}")
+            continue
+        try:
+            df = pd.read_csv(path, encoding='utf-8-sig')
+            for _, row in df.iterrows():
+                try:
+                    tid = int(row.get("team_id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if tid:
+                    lookup[tid] = row.to_dict()
+        except Exception as e:
+            print(f"[WARN] Błąd wczytania {fname}: {e}")
+    return lookup
+
+
+def get_team_stats_from_lookup(team_id: int, role: str, lookup: dict) -> dict:
+    prefix = f"{role}_team_"
+    stats = lookup.get(int(team_id), {})
+
+    if not stats:
+        return {
+            f"{prefix}ppg_{role}":                   np.nan,
+            f"{prefix}btts_pct_{role}":              np.nan,
+            f"{prefix}over25_pct_{role}":            np.nan,
+            f"{prefix}corners_avg_{role}":           np.nan,
+            f"{prefix}corners_against_avg_{role}":   np.nan,
+            f"{prefix}scored_avg_{role}":            np.nan,
+            f"{prefix}conceded_avg_{role}":          np.nan,
+            f"{prefix}xg_for_{role}":                np.nan,
+            f"{prefix}xg_against_{role}":            np.nan,
+            f"{prefix}win_pct_{role}":               np.nan,
+            f"{prefix}matches_played":               0,
+            f"{prefix}over95c_pct_{role}":           np.nan,
+        }
+
+    suffix = f"_{role}"
+
+    def gs(key_base):
+        val = stats.get(f"{key_base}{suffix}")
+        if val is None:
+            val = stats.get(f"{key_base}_overall")
+        try:
+            return float(val) if val is not None else np.nan
+        except (TypeError, ValueError):
+            return np.nan
+
+    try:
+        mp = int(stats.get(f"seasonMatchesPlayed{suffix}") or 0)
+    except (TypeError, ValueError):
+        mp = 0
+
+    return {
+        f"{prefix}ppg_{role}":                 gs("seasonPPG"),
+        f"{prefix}btts_pct_{role}":            gs("seasonBTTSPercentage"),
+        f"{prefix}over25_pct_{role}":          gs("seasonOver25Percentage"),
+        f"{prefix}corners_avg_{role}":         gs("cornersAVG"),
+        f"{prefix}corners_against_avg_{role}": gs("cornersAgainstAVG"),
+        f"{prefix}scored_avg_{role}":          gs("seasonScoredAVG"),
+        f"{prefix}conceded_avg_{role}":        gs("seasonConcededAVG"),
+        f"{prefix}xg_for_{role}":              gs("xg_for_avg"),
+        f"{prefix}xg_against_{role}":          gs("xg_against_avg"),
+        f"{prefix}win_pct_{role}":             gs("winPercentage"),
+        f"{prefix}matches_played":             mp,
+        f"{prefix}over95c_pct_{role}":         gs("over95CornersPercentage"),
+    }
 
 
 def generate_gpt_predictions(match_id, home_name, away_name,
@@ -686,7 +763,6 @@ def main():
     for lg in ACTIVE_LEAGUES:
         _, models_dir, _ = LEAGUE_DIRS[lg]
         league_models[lg] = load_models(models_dir)
-    combined_models = load_models(MODELS_COMBINED)
 
     # ── Załaduj historię per liga
     league_history = {}
@@ -694,8 +770,8 @@ def main():
         hist_df = load_historical(hist_dir)
         league_history[lg] = build_team_history(hist_df)
 
-    # Imputer fallback z combined (mediany globalne)
-    combined_imp = combined_models[1] if combined_models[1] else {}
+    # ── Załaduj current teams stats
+    teams_lookup = load_current_teams_lookup()
 
     # ── Przetwórz mecze
     all_tips      = []
@@ -765,16 +841,30 @@ def main():
             warnings.append(f'match_id={match_id}: błąd build_features ({e})')
             continue
 
+        # Team stats z current lookup
+        h_ts = get_team_stats_from_lookup(home_id, 'home', teams_lookup)
+        a_ts = get_team_stats_from_lookup(away_id, 'away', teams_lookup)
+        features.update(h_ts)
+        features.update(a_ts)
+        h_ppg = h_ts.get('home_team_ppg_home', np.nan)
+        a_ppg = a_ts.get('away_team_ppg_away', np.nan)
+        h_sc  = h_ts.get('home_team_scored_avg_home', np.nan)
+        a_sc  = a_ts.get('away_team_scored_avg_away', np.nan)
+        h_co  = h_ts.get('home_team_corners_avg_home', np.nan)
+        a_co  = a_ts.get('away_team_corners_avg_away', np.nan)
+        features['diff_team_ppg']     = h_ppg - a_ppg if not (np.isnan(h_ppg) or np.isnan(a_ppg)) else np.nan
+        features['diff_team_scored']  = h_sc  - a_sc  if not (np.isnan(h_sc)  or np.isnan(a_sc))  else np.nan
+        features['diff_team_corners'] = h_co  - a_co  if not (np.isnan(h_co)  or np.isnan(a_co))  else np.nan
+
         # Potencjały z gpt JSON (dla kolumn CSV)
         pot       = get_match_potencjaly(match_id)
         btts_pot  = pot.get('btts_potential', '')
         corn_pot  = pot.get('corners_o95_potential', '')
         o25_pot   = pot.get('o25_potential', '')
 
-        # Predykcje z modelu ligi i combined
+        # Predykcje z modelu ligi
         for model_type, (models_dict, imputors_dict) in [
-            ('liga',     (lg_models_dict, lg_imputors_dict)),
-            ('combined', combined_models),
+            ('liga', (lg_models_dict, lg_imputors_dict)),
         ]:
             for mn in MODEL_NAMES:
                 if mn not in models_dict:
@@ -834,7 +924,7 @@ def main():
     else:
         hdr = (f"{'#':>3} │ {'Godz':5} │ {'Mecz':25} │ {'Liga':5} │ "
                f"{'Model':12} │ {'Typ':12} │ {'Score':5} │ {'Kurs':5} │ "
-               f"{'Pin':5} │ {'EV':7} │ {'Stake':5} │ MType")
+               f"{'Pin':5} │ {'EV':7} │ {'Stake':5}")
         sep = '─' * len(hdr)
         print('══════════════════════════════════════════════════════')
         print(hdr)
@@ -850,7 +940,7 @@ def main():
             print(
                 f"{i:>3} │ {t['kickoff']:5} │ {match_short:25} │ {lg_abbr:5} │ "
                 f"{model_label:12} │ {t['typ']:12} │ {t['score']:4.1f}% │ "
-                f"{t['odds']:5.2f} │ {pin_str} │ {t['ev']:+6.1f}% │ {t['stake']:5.1f} │ {t['model_type']}"
+                f"{t['odds']:5.2f} │ {pin_str} │ {t['ev']:+6.1f}% │ {t['stake']:5.1f}"
             )
 
     # ── GPT Predictions console
@@ -883,8 +973,7 @@ def main():
                 'Wynik', 'Rezultat', 'Corners', 'Kartki', 'Profit_PLN']
 
     for lg, (lg_name, scorer_dir) in league_abbr_map.items():
-        # Tylko combined dla ML (liga nie trafia do CSV)
-        lg_ml = [t for t in all_tips if t['league'] == lg and t['model_type'] == 'combined']
+        lg_ml = [t for t in all_tips if t['league'] == lg and t['model_type'] == 'liga']
         # GPT rows dla tej ligi
         lg_gpt = [r for r in gpt_csv_rows if r.get('_liga_key') == lg]
 

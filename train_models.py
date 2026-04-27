@@ -17,10 +17,46 @@ from sklearn.metrics import roc_auc_score, brier_score_loss
 
 from nordic_config import (
     DATA_DIR, REPORTS_DIR,
-    MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK, MODELS_COMBINED,
+    MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK,
 )
 
 # ── FEATURE SETS ──────────────────────────────────────────────────────────────
+
+TEAM_STATS_HOME = [
+    'home_team_ppg_home',
+    'home_team_btts_pct_home',
+    'home_team_over25_pct_home',
+    'home_team_corners_avg_home',
+    'home_team_corners_against_avg_home',
+    'home_team_scored_avg_home',
+    'home_team_conceded_avg_home',
+    'home_team_xg_for_home',
+    'home_team_xg_against_home',
+    'home_team_win_pct_home',
+    'home_team_over95c_pct_home',
+    'home_team_matches_played',
+]
+
+TEAM_STATS_AWAY = [
+    'away_team_ppg_away',
+    'away_team_btts_pct_away',
+    'away_team_over25_pct_away',
+    'away_team_corners_avg_away',
+    'away_team_corners_against_avg_away',
+    'away_team_scored_avg_away',
+    'away_team_conceded_avg_away',
+    'away_team_xg_for_away',
+    'away_team_xg_against_away',
+    'away_team_win_pct_away',
+    'away_team_over95c_pct_away',
+    'away_team_matches_played',
+]
+
+TEAM_STATS_DIFF = [
+    'diff_team_ppg',
+    'diff_team_scored',
+    'diff_team_corners',
+]
 
 RESULT_FEATURES = [
     'odds_ft_1', 'odds_ft_x', 'odds_ft_2',
@@ -32,7 +68,7 @@ RESULT_FEATURES = [
     'diff_last5_goals_scored', 'diff_last5_win_rate',
     'team_a_xg_prematch', 'team_b_xg_prematch',
     'pre_match_home_ppg', 'pre_match_away_ppg',
-]
+] + TEAM_STATS_HOME + TEAM_STATS_AWAY + TEAM_STATS_DIFF
 
 BTTS_FEATURES = [
     'odds_btts_yes', 'odds_btts_no',
@@ -45,6 +81,11 @@ BTTS_FEATURES = [
     'btts_potential', 'o25_potential', 'avg_potential',
     'team_a_xg_prematch', 'team_b_xg_prematch',
     'pre_match_home_ppg', 'pre_match_away_ppg',
+    'home_team_btts_pct_home', 'away_team_btts_pct_away',
+    'home_team_scored_avg_home', 'away_team_scored_avg_away',
+    'home_team_conceded_avg_home', 'away_team_conceded_avg_away',
+    'home_team_xg_for_home', 'away_team_xg_for_away',
+    'home_team_matches_played',
 ]
 
 OVER25_FEATURES = [
@@ -58,6 +99,11 @@ OVER25_FEATURES = [
     'o25_potential', 'btts_potential', 'avg_potential',
     'team_a_xg_prematch', 'team_b_xg_prematch',
     'pre_match_home_ppg', 'pre_match_away_ppg',
+    'home_team_over25_pct_home', 'away_team_over25_pct_away',
+    'home_team_scored_avg_home', 'away_team_scored_avg_away',
+    'home_team_xg_for_home', 'away_team_xg_for_away',
+    'diff_team_scored',
+    'home_team_matches_played',
 ]
 
 CORNERS_FEATURES = [
@@ -69,6 +115,11 @@ CORNERS_FEATURES = [
     'diff_last5_corners_avg',
     'corners_potential', 'corners_o95_potential', 'avg_potential',
     'team_a_xg_prematch', 'team_b_xg_prematch',
+    'home_team_corners_avg_home', 'away_team_corners_avg_away',
+    'home_team_corners_against_avg_home', 'away_team_corners_against_avg_away',
+    'home_team_over95c_pct_home', 'away_team_over95c_pct_away',
+    'diff_team_corners',
+    'home_team_matches_played',
 ]
 
 MODELS_CONFIG = {
@@ -93,10 +144,9 @@ MODELS_ARCH = {
 }
 
 LEAGUE_SETS = {
-    'allsvenskan':    ('allsvenskan',  MODELS_ALLSV),
-    'eliteserien':    ('eliteserien',  MODELS_ELITE),
-    'veikkausliiga':  ('veikkausliiga', MODELS_VEIKK),
-    'nordic_combined': (None,          MODELS_COMBINED),
+    'allsvenskan':   ('allsvenskan',   MODELS_ALLSV),
+    'eliteserien':   ('eliteserien',   MODELS_ELITE),
+    'veikkausliiga': ('veikkausliiga', MODELS_VEIKK),
 }
 
 # ── POMOCNICZE ────────────────────────────────────────────────────────────────
@@ -296,10 +346,9 @@ def main():
             }
 
         label_map = {
-            'allsvenskan':    'ALLSVENSKAN',
-            'eliteserien':    'ELITESERIEN',
-            'veikkausliiga':  'VEIKKAUSLIIGA',
-            'nordic_combined': 'NORDIC COMBINED',
+            'allsvenskan':   'ALLSVENSKAN',
+            'eliteserien':   'ELITESERIEN',
+            'veikkausliiga': 'VEIKKAUSLIIGA',
         }
         print_league_table(label_map[league_key], n, table_rows)
 

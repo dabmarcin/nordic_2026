@@ -26,6 +26,10 @@ class NumpyEncoder(json.JSONEncoder):
 from nordic_config import (
     ALLSVENSKAN_DIR, ELITESERIEN_DIR, VEIKKAUSLIIGA_DIR,
     DATA_DIR, REPORTS_DIR, H2H_CACHE,
+    CURRENT_DIR,
+    TEAMS_ALLSV_HIST, TEAMS_ELITE_HIST, TEAMS_VEIKK_HIST,
+    ALLSVENSKAN_HISTORICAL, ELITESERIEN_HISTORICAL, VEIKKAUSLIIGA_HISTORICAL,
+    ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
 )
 
 # ── POTENCJAŁY — próg niezerowego wypełnienia ─────────────────────────────────
@@ -250,6 +254,102 @@ def compute_last5(df):
 
     return results, coverage
 
+# ── TEAMS LOOKUP ──────────────────────────────────────────────────────────────
+
+def load_teams_lookup() -> dict:
+    lookup = {}
+
+    for liga, hist_dir, season_list in [
+        ("allsvenskan",   TEAMS_ALLSV_HIST, ALLSVENSKAN_HISTORICAL),
+        ("eliteserien",   TEAMS_ELITE_HIST, ELITESERIEN_HISTORICAL),
+        ("veikkausliiga", TEAMS_VEIKK_HIST, VEIKKAUSLIIGA_HISTORICAL),
+    ]:
+        for season in season_list:
+            sid = season["id"]
+            path = os.path.join(hist_dir, f"advanced_league_teams_{sid}.csv")
+            if not os.path.isfile(path):
+                continue
+            df = pd.read_csv(path, encoding='utf-8-sig')
+            for _, row in df.iterrows():
+                try:
+                    tid = int(row.get("team_id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if tid:
+                    lookup[(tid, int(sid))] = row.to_dict()
+
+    for liga, filename, sid in [
+        ("allsvenskan",   "allsvenskan_teams_2026.csv",   ALLSVENSKAN_2026_ID),
+        ("eliteserien",   "eliteserien_teams_2026.csv",   ELITESERIEN_2026_ID),
+        ("veikkausliiga", "veikkausliiga_teams_2026.csv", VEIKKAUSLIIGA_2026_ID),
+    ]:
+        path = os.path.join(CURRENT_DIR, filename)
+        if not os.path.isfile(path):
+            continue
+        df = pd.read_csv(path, encoding='utf-8-sig')
+        for _, row in df.iterrows():
+            try:
+                tid = int(row.get("team_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if tid:
+                lookup[(tid, int(sid))] = row.to_dict()
+
+    return lookup
+
+
+def get_team_stats(team_id, season_id, role: str, lookup: dict) -> dict:
+    prefix = f"{role}_team_"
+    stats = lookup.get((int(team_id), int(season_id)), {})
+
+    if not stats:
+        return {
+            f"{prefix}ppg_{role}":                   np.nan,
+            f"{prefix}btts_pct_{role}":              np.nan,
+            f"{prefix}over25_pct_{role}":            np.nan,
+            f"{prefix}corners_avg_{role}":           np.nan,
+            f"{prefix}corners_against_avg_{role}":   np.nan,
+            f"{prefix}scored_avg_{role}":            np.nan,
+            f"{prefix}conceded_avg_{role}":          np.nan,
+            f"{prefix}xg_for_{role}":                np.nan,
+            f"{prefix}xg_against_{role}":            np.nan,
+            f"{prefix}win_pct_{role}":               np.nan,
+            f"{prefix}matches_played":               0,
+            f"{prefix}over95c_pct_{role}":           np.nan,
+        }
+
+    suffix = f"_{role}"
+
+    def get_stat(key_base):
+        val = stats.get(f"{key_base}{suffix}")
+        if val is None:
+            val = stats.get(f"{key_base}_overall")
+        try:
+            return float(val) if val is not None else np.nan
+        except (TypeError, ValueError):
+            return np.nan
+
+    try:
+        mp = int(stats.get(f"seasonMatchesPlayed{suffix}") or 0)
+    except (TypeError, ValueError):
+        mp = 0
+
+    return {
+        f"{prefix}ppg_{role}":                 get_stat("seasonPPG"),
+        f"{prefix}btts_pct_{role}":            get_stat("seasonBTTSPercentage"),
+        f"{prefix}over25_pct_{role}":          get_stat("seasonOver25Percentage"),
+        f"{prefix}corners_avg_{role}":         get_stat("cornersAVG"),
+        f"{prefix}corners_against_avg_{role}": get_stat("cornersAgainstAVG"),
+        f"{prefix}scored_avg_{role}":          get_stat("seasonScoredAVG"),
+        f"{prefix}conceded_avg_{role}":        get_stat("seasonConcededAVG"),
+        f"{prefix}xg_for_{role}":              get_stat("xg_for_avg"),
+        f"{prefix}xg_against_{role}":          get_stat("xg_against_avg"),
+        f"{prefix}win_pct_{role}":             get_stat("winPercentage"),
+        f"{prefix}matches_played":             mp,
+        f"{prefix}over95c_pct_{role}":         get_stat("over95CornersPercentage"),
+    }
+
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -259,12 +359,42 @@ def main():
 
     print("=== BUILD DATASET — Nordic 2026 ===\n")
 
-    # ── KROK 1: wczytaj dane
+    # ── KROK 1: wczytaj dane historyczne
     df_all, counts = load_historical()
-    print("Wczytano:")
+    print("Wczytano historyczne:")
     for league in ['allsvenskan', 'eliteserien', 'veikkausliiga']:
         print(f"  {league.capitalize():15} {counts.get(league, 0):4} meczów")
-    print(f"  {'Łącznie:':15} {len(df_all):4} meczów complete\n")
+    print(f"  {'Łącznie:':15} {len(df_all):4} meczów complete")
+
+    # ── KROK 1b: dołącz current matches 2026
+    current_counts = {}
+    for liga, filename, sid in [
+        ("allsvenskan",   "allsvenskan_matches_2026.csv",   ALLSVENSKAN_2026_ID),
+        ("eliteserien",   "eliteserien_matches_2026.csv",   ELITESERIEN_2026_ID),
+        ("veikkausliiga", "veikkausliiga_matches_2026.csv", VEIKKAUSLIIGA_2026_ID),
+    ]:
+        path = os.path.join(CURRENT_DIR, filename)
+        if not os.path.isfile(path):
+            continue
+        df_cur = pd.read_csv(path, encoding='utf-8-sig')
+        if df_cur.empty:
+            continue
+        df_cur = df_cur[df_cur['status'] == 'complete'].copy()
+        if df_cur.empty:
+            continue
+        df_cur['league'] = liga
+        df_cur['season_id'] = sid
+        current_counts[liga] = len(df_cur)
+        df_all = pd.concat([df_all, df_cur], ignore_index=True)
+        print(f"  {liga.capitalize():15} 2026 (current): {len(df_cur)} meczów complete")
+
+    df_all = df_all.drop_duplicates(subset='id')
+    df_all = df_all.sort_values('date_unix').reset_index(drop=True)
+    print(f"  {'Po dedup:':15} {len(df_all):4} meczów łącznie\n")
+
+    # ── KROK 1c: teams lookup
+    teams_lookup = load_teams_lookup()
+    print(f"Teams w lookup: {len(teams_lookup)} wpisów\n")
 
     # ── KROK 2: konwersje
     df_all['btts']      = df_all['btts'].astype(int)
@@ -333,6 +463,39 @@ def main():
         df_all[col] = h2h_df[col]
     h2h_neutral = len(df_all) - h2h_with_cache
 
+    # ── KROK 3b: team stats features
+    team_stats_rows = []
+    n_with_team_stats = 0
+    for _, row in df_all.iterrows():
+        sid = row.get('season_id', 0)
+        try:
+            sid = int(float(str(sid)))
+        except (TypeError, ValueError):
+            sid = 0
+        h_stats = get_team_stats(row['homeID'], sid, 'home', teams_lookup)
+        a_stats = get_team_stats(row['awayID'], sid, 'away', teams_lookup)
+        has_data = h_stats.get('home_team_matches_played', 0) > 0 or \
+                   a_stats.get('away_team_matches_played', 0) > 0
+        if has_data:
+            n_with_team_stats += 1
+        feat = {}
+        feat.update(h_stats)
+        feat.update(a_stats)
+        h_ppg = h_stats.get('home_team_ppg_home', np.nan)
+        a_ppg = a_stats.get('away_team_ppg_away', np.nan)
+        h_sc  = h_stats.get('home_team_scored_avg_home', np.nan)
+        a_sc  = a_stats.get('away_team_scored_avg_away', np.nan)
+        h_co  = h_stats.get('home_team_corners_avg_home', np.nan)
+        a_co  = a_stats.get('away_team_corners_avg_away', np.nan)
+        feat['diff_team_ppg']     = h_ppg - a_ppg if pd.notna(h_ppg) and pd.notna(a_ppg) else np.nan
+        feat['diff_team_scored']  = h_sc  - a_sc  if pd.notna(h_sc)  and pd.notna(a_sc)  else np.nan
+        feat['diff_team_corners'] = h_co  - a_co  if pd.notna(h_co)  and pd.notna(a_co)  else np.nan
+        team_stats_rows.append(feat)
+
+    team_stats_df = pd.DataFrame(team_stats_rows, index=df_all.index)
+    for col in team_stats_df.columns:
+        df_all[col] = team_stats_df[col]
+
     # ── KROK 4: targety
     df_all['target_btts']             = df_all['btts']
     df_all['target_over25']           = df_all['over25']
@@ -340,17 +503,19 @@ def main():
     df_all['target_result_home']      = (df_all['homeGoalCount'] > df_all['awayGoalCount']).astype(int)
     df_all['target_result_away']      = (df_all['awayGoalCount'] > df_all['homeGoalCount']).astype(int)
 
-    # ── KROK 5: imputacja per liga (mediany)
+    # ── KROK 5: imputacja per liga (mediany) — last5 + team_stats
     last5_cols = list(last5_results.keys())
+    team_stat_cols = [c for c in team_stats_df.columns
+                      if c in df_all.columns and df_all[c].isna().any()]
     imputation_values = {}
     for league in ['allsvenskan', 'eliteserien', 'veikkausliiga']:
         mask = df_all['league'] == league
         medians = {}
-        for col in last5_cols:
+        for col in last5_cols + team_stat_cols:
             med = df_all.loc[mask, col].median()
             medians[col] = round(float(med), 4) if pd.notna(med) else 0.0
         imputation_values[league] = medians
-        for col in last5_cols:
+        for col in last5_cols + team_stat_cols:
             fill_mask = mask & df_all[col].isna()
             df_all.loc[fill_mask, col] = medians[col]
 
@@ -372,6 +537,17 @@ def main():
     print(f"\nH2H coverage:")
     print(f"  Mecze z cache (n>=2):   {h2h_with_cache} ({h2h_with_cache/n_total*100:.1f}%)")
     print(f"  Mecze neutral fallback: {h2h_neutral} ({h2h_neutral/n_total*100:.1f}%)")
+
+    n_without_team = n_total - n_with_team_stats
+    print(f"\nTeams coverage:")
+    print(f"  Mecze z team stats:   {n_with_team_stats} ({n_with_team_stats/n_total*100:.1f}%)")
+    print(f"  Mecze bez team stats: {n_without_team} ({n_without_team/n_total*100:.1f}%)")
+
+    if current_counts:
+        print(f"\nCurrent season complete:")
+        for lg in ['allsvenskan', 'eliteserien', 'veikkausliiga']:
+            if lg in current_counts:
+                print(f"  {lg.capitalize():15} {current_counts[lg]} meczów")
 
     out_path = os.path.join(DATA_DIR, 'training_dataset.csv')
     df_all.to_csv(out_path, index=False, encoding='utf-8-sig')

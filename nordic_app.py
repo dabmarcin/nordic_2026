@@ -1389,6 +1389,66 @@ with tabs[5]:
 
     st.divider()
 
+    # ── Tygodniowy retren ─────────────────────────────────────────────────────
+    st.subheader("🔁 Tygodniowy retren")
+    st.caption(
+        "Krok 1: fetch_data --weekly (aktualne mecze + statsy drużyn 2026) → "
+        "Krok 2: build_dataset --debug → "
+        "Krok 3: train_models --debug"
+    )
+
+    if st.button("🚀 Uruchom pełny retren (3 kroki)", type="primary"):
+        retren_ok = True
+
+        st.write("**Krok 1/3** — pobieranie danych tygodniowych...")
+        with st.spinner("fetch_data.py --weekly..."):
+            rc1, out1, err1 = run_script("fetch_data.py", ["--weekly"])
+        if rc1 == 0:
+            st.success("Krok 1 OK — dane pobrane")
+        else:
+            st.error("Krok 1 BŁĄD — fetch_data --weekly")
+            st.code(err1[:500])
+            retren_ok = False
+        with st.expander("Log Krok 1"):
+            st.code(out1[-2000:])
+
+        if retren_ok:
+            st.write("**Krok 2/3** — budowanie datasetu...")
+            with st.spinner("build_dataset.py --debug..."):
+                rc2, out2, err2 = run_script("build_dataset.py", ["--debug"])
+            if rc2 == 0:
+                st.success("Krok 2 OK — dataset gotowy")
+            else:
+                st.error("Krok 2 BŁĄD — build_dataset")
+                st.code(err2[:500])
+                retren_ok = False
+            with st.expander("Log Krok 2"):
+                st.code(out2[-2000:])
+
+        if retren_ok:
+            st.write("**Krok 3/3** — trening modeli...")
+            with st.spinner("train_models.py --debug (~3 min)..."):
+                rc3, out3, err3 = run_script("train_models.py", ["--debug"])
+            if rc3 == 0:
+                st.success("Krok 3 OK — modele wytrenowane!")
+                lines = [
+                    l for l in out3.split("\n")
+                    if "│" in l and "Model" not in l and "─" not in l and "═" not in l
+                ]
+                if lines:
+                    st.code("\n".join(lines))
+            else:
+                st.error("Krok 3 BŁĄD — train_models")
+                st.code(err3[:500])
+            with st.expander("Log Krok 3"):
+                st.code(out3[-3000:])
+
+        if retren_ok:
+            st.balloons()
+            st.success("Pełny retren zakończony pomyślnie!")
+
+    st.divider()
+
     # ── H2H Cache ─────────────────────────────────────────────────────────────
     st.subheader("🔗 H2H Cache")
     h2h_files = glob.glob(os.path.join(H2H_CACHE, "match_*.json"))
