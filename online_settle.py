@@ -643,30 +643,52 @@ def settle_daily_scorer(csv_path: str) -> Tuple[int, str]:
                 win = 1 if tc < line else 0
         elif "BTTS" in typ_upper and ("YES" in typ_upper or "TAK" in typ_upper):
             win = 1 if (home_int > 0 and away_int > 0) else 0
-        elif "BTTS" in typ_upper and "NO" in typ_upper:
+        elif "BTTS" in typ_upper and ("NO" in typ_upper or "NIE" in typ_upper):
             win = 0 if (home_int > 0 and away_int > 0) else 1
-        elif "OVER" in typ_upper and "2.5" in typ_str:
-            win = 1 if tg > 2 else 0
-        elif "UNDER" in typ_upper and "2.5" in typ_str:
-            win = 1 if tg < 3 else 0
-        elif "DOUBLE CHANCE" in typ_upper:
-            if "1X" in typ_upper:
+        elif "OVER" in typ_upper:
+            # Over X.5 goli — dowolna linia (np. 1.5, 2.5, 3.5)
+            line = _extract_line_from_typ(typ_str)
+            if line is not None:
+                win = 1 if tg > line else 0
+        elif "UNDER" in typ_upper:
+            line = _extract_line_from_typ(typ_str)
+            if line is not None:
+                win = 1 if tg < line else 0
+        elif "NIE PRZEGRA" in typ_upper:
+            # "[Druzyna] nie przegra" = Double Chance
+            if home_team and home_team in typ_upper:
+                win = 1 if home_int >= away_int else 0   # 1X
+            elif away_team and away_team in typ_upper:
+                win = 1 if away_int >= home_int else 0   # X2
+            else:
+                win = 1 if home_int >= away_int else 0   # fallback 1X
+        elif ("WIN OR DRAW" in typ_upper or
+              "WYGRA LUB REMIS" in typ_upper or
+              "WYGRA LUB ZREMISUJE" in typ_upper):
+            # "[Druzyna] wygra lub remis" — sprawdz stronę
+            if home_team and home_team in typ_upper:
+                win = 1 if home_int >= away_int else 0   # 1X
+            elif away_team and away_team in typ_upper:
+                win = 1 if away_int >= home_int else 0   # X2
+            else:
+                win = 1 if home_int >= away_int else 0   # fallback 1X
+        elif _re.search(r'\b(1X|X2|12)\b', typ_upper):
+            # "[Druzyna] 1X" / bare "1X" / "Double Chance 1X" etc.
+            dc = _re.search(r'\b(1X|X2|12)\b', typ_upper).group(1)
+            if dc == "1X":
                 win = 1 if home_int >= away_int else 0
-            elif "X2" in typ_upper:
+            elif dc == "X2":
                 win = 1 if away_int >= home_int else 0
-            elif "12" in typ_upper:
+            else:   # 12
                 win = 1 if home_int != away_int else 0
-            elif "WIN OR DRAW" in typ_upper or "WYGRA LUB REMIS" in typ_upper:
-                # "[Druzyna] Win or Draw" — sprawdz czy druzyna to home czy away
-                if home_team and home_team in typ_upper:
-                    win = 1 if home_int >= away_int else 0
-                elif away_team and away_team in typ_upper:
-                    win = 1 if away_int >= home_int else 0
         elif "AWAY WIN" in typ_upper or typ_str == "2":
             win = 1 if away_int > home_int else 0
         elif "HOME WIN" in typ_upper or typ_str == "1" or "RESULT 1" in typ_upper:
             win = 1 if home_int > away_int else 0
+        elif typ_str == "X":
+            win = 1 if home_int == away_int else 0
         elif "WYGRA" in typ_upper:
+            # "[Druzyna] wygra" — prosta wygrana (nie Double Chance)
             if home_team and home_team in typ_upper:
                 win = 1 if home_int > away_int else 0
             elif away_team and away_team in typ_upper:

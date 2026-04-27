@@ -101,6 +101,141 @@ def get_match_potencjaly(match_id):
         return {}
 
 
+def normalize_typ(typ: str,
+                  home: str = '',
+                  away: str = '') -> str:
+    if not isinstance(typ, str) or not typ.strip():
+        return typ
+
+    t = typ.strip()
+    t_lower = t.lower()
+    h = home.strip().lower()
+    a = away.strip().lower()
+
+    if ' + ' in t:
+        return 'Parlay'
+
+    if t_lower in ('home win', 'home_win'):
+        return '1'
+    if t_lower in ('away win', 'away_win'):
+        return '2'
+    if t_lower in ('draw',):
+        return 'X'
+
+    if t_lower in ('over corners', 'corners over', 'over corner'):
+        return 'Corners Over 9.5'
+
+    import re
+    m = re.match(r'corners?\s+(over|under)\s+([\d.]+)', t_lower)
+    if m:
+        d = m.group(1).capitalize()
+        return f'Corners {d} {m.group(2)}'
+
+    m = re.match(
+        r'(over|under)\s+([\d.]+)'
+        r'(?:\s+(?:goli|goals|bramek|gola|bramki|mål|maalia|maalin))?$',
+        t_lower)
+    if m:
+        d = m.group(1).capitalize()
+        return f'{d} {m.group(2)}'
+
+    btts_yes = ('btts yes', 'btts tak', 'btts – tak', 'btts - tak',
+                'btts yes - polecane')
+    btts_no  = ('btts no', 'btts nie', 'btts – nie', 'btts - nie')
+    if t_lower in btts_yes or (
+            t_lower.startswith('btts') and
+            'no' not in t_lower and
+            'nie' not in t_lower):
+        return 'BTTS Yes'
+    if t_lower in btts_no:
+        return 'BTTS No'
+
+    if re.search(r'double\s*chance\s*1x', t_lower):
+        return '1X'
+    if re.search(r'double\s*chance\s*x2', t_lower):
+        return 'X2'
+    if re.search(r'double\s*chance\s*12', t_lower):
+        return '12'
+
+    dc_m = re.match(
+        r'double\s*chance\s+(.+?)(?:\s+win[/\s]draw'
+        r'|\s+wygra?\s+lub|\s+or\s+draw)?$',
+        t_lower)
+    if dc_m:
+        mention = dc_m.group(1).strip()
+        if h and h in mention:
+            return '1X'
+        if a and a in mention:
+            return 'X2'
+        return '1X'
+
+    wlr = re.search(
+        r'wygra\s+lub\s+remis'
+        r'|win\s+or\s+draw|win/draw'
+        r'|vinner\s+eller\s+(?:oavgjort|uavgjort)'
+        r'|wygra?\s+lub\s+zremisuje',
+        t_lower)
+    if wlr:
+        if h and h in t_lower:
+            return '1X'
+        if a and a in t_lower:
+            return 'X2'
+        return '1X'
+
+    win = re.search(
+        r'\bwygra\b|\bwins?\b(?!\s+or)'
+        r'|\bvinner\b(?!\s+eller)'
+        r'|\bsiegt\b|\bvoittaa\b|\bvann\b',
+        t_lower)
+    if win:
+        pre = t_lower[:win.start()].strip()
+        if h and (h in pre or h in t_lower):
+            return '1'
+        if a and (a in pre or a in t_lower):
+            return '2'
+        return '1'
+
+    if t_lower in ('remis', 'draw', 'x', 'oavgjort', 'tasapeli'):
+        return 'X'
+
+    if t_lower in ('1', 'x', '2', '1x', 'x2', '12'):
+        return t_lower.upper()
+
+    return t
+
+
+if '--test-normalize' in sys.argv:
+    cases = [
+        ('AIK wygra',                    'Degerfors',  'AIK',     '2'),
+        ('Malmö FF wygra lub remis',      'Malmö FF',   'Sirius',  '1X'),
+        ('Viking wygra lub remis',        'Fredrikstad','Viking',  'X2'),
+        ('Double Chance GAIS Win/Draw',   'GAIS',       'Mjällby', '1X'),
+        ('Double Chance Lahti',           'Lahti',      'Oulu',    '1X'),
+        ('Over Corners',                  '',           '',        'Corners Over 9.5'),
+        ('Corners Over 8.5',              '',           '',        'Corners Over 8.5'),
+        ('BTTS Yes + Over 2.5',           '',           '',        'Parlay'),
+        ('Under 4.5 goals',               '',           '',        'Under 4.5'),
+        ('Over 2.5 goli',                 '',           '',        'Over 2.5'),
+        ('Home Win',                      '',           '',        '1'),
+        ('Away Win',                      '',           '',        '2'),
+        ('BTTS Yes',                      '',           '',        'BTTS Yes'),
+        ('BTTS No',                       '',           '',        'BTTS No'),
+        ('KuPS wygra',                    'KuPS',       'Oulu',    '1'),
+    ]
+    print('=== TEST normalize_typ() ===')
+    all_ok = True
+    for typ, h, a, exp in cases:
+        got = normalize_typ(typ, h, a)
+        ok = '✅' if got == exp else '❌'
+        if got != exp:
+            all_ok = False
+        print(f'{ok} normalize_typ({typ!r:35} h={h!r:15} a={a!r:15})'
+              f' → {got!r:15}  (oczekiwano {exp!r})')
+    print()
+    print('Wszystkie OK!' if all_ok else 'BŁĘDY — sprawdź funkcję!')
+    sys.exit(0)
+
+
 def generate_gpt_predictions(match_id, home_name, away_name,
                               kickoff, liga, date_str) -> list:
     """Wczytuje gpt_tips z gpt_{match_id}.json i zwraca wiersze CSV z Model_type='gpt_pred'."""
@@ -148,7 +283,10 @@ def generate_gpt_predictions(match_id, home_name, away_name,
                 'Liga':          liga.upper()[:5],
                 'Model':         'GPT FootyStats',
                 'Model_type':    'gpt_pred',
-                'Typ':           tip.get('typ', ''),
+                'Typ':           normalize_typ(
+                    tip.get('typ', ''),
+                    home=home_name,
+                    away=away_name),
                 'Score[%]':      '',
                 'P_model':       '',
                 'Kurs':          kurs,
@@ -658,7 +796,10 @@ def main():
                         'kickoff':      kickoff_str,
                         'model':        mn,
                         'model_type':   model_type,
-                        'typ':          pred['typ'],
+                        'typ':          normalize_typ(
+                            pred['typ'],
+                            home=home_name,
+                            away=away_name),
                         'score':        pred['score'],
                         'p':            pred['p'],
                         'odds':         pred['odds'],

@@ -18,7 +18,11 @@
       "Bash(python fetch_match_details.py --date 2026-04-21 --force)",
       "Bash(python regen_gpt_tips.py)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('nordic_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK — brak błędów składni'\\)\")",
-      "Bash(python -m py_compile \"c:/Projects/nordic_2026/nordic_app.py\")"
+      "Bash(python -m py_compile \"c:/Projects/nordic_2026/nordic_app.py\")",
+      "Bash(python -m py_compile nordic_scorer.py)",
+      "Bash(python nordic_scorer.py --test-normalize)",
+      "Bash(python -m py_compile \"c:/Projects/nordic_2026/online_settle.py\")",
+      "Bash(python -)"
     ]
   }
 }
