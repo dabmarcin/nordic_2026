@@ -16,6 +16,7 @@ from nordic_config import (
     DAILY_DIR,
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
     MATCH_DETAILS_DIR,
+    CURRENT_DIR,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
 )
 
@@ -270,14 +271,122 @@ def calc_stats_table(df: pd.DataFrame, group_col: str, stake: float) -> pd.DataF
     return result
 
 
+def safe_float(val, default=0.0) -> float:
+    try:
+        return float(val) if pd.notna(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def load_league_data(league: str) -> tuple:
+    key = {"allsvenskan": "allsvenskan",
+           "eliteserien": "eliteserien",
+           "veikkausliiga": "veikkausliiga"}.get(league, "allsvenskan")
+    teams_path   = os.path.join(CURRENT_DIR, f"{key}_teams_2026.csv")
+    matches_path = os.path.join(CURRENT_DIR, f"{key}_matches_2026.csv")
+    df_teams   = pd.DataFrame()
+    df_matches = pd.DataFrame()
+    if os.path.isfile(teams_path):
+        df_teams = pd.read_csv(teams_path, encoding='utf-8-sig')
+    if os.path.isfile(matches_path):
+        df_matches = pd.read_csv(matches_path, encoding='utf-8-sig')
+        df_matches = df_matches[df_matches['status'] == 'complete'].copy()
+
+    if not df_teams.empty and not df_matches.empty:
+        hid = df_matches['homeID'].astype(str)
+        aid = df_matches['awayID'].astype(str)
+        hg  = pd.to_numeric(df_matches['homeGoalCount'], errors='coerce').fillna(0)
+        ag  = pd.to_numeric(df_matches['awayGoalCount'], errors='coerce').fillna(0)
+        home_df = pd.DataFrame({'tid': hid,
+                                'w': (hg > ag).astype(int),
+                                'd': (hg == ag).astype(int),
+                                'l': (hg < ag).astype(int),
+                                'gd': hg - ag})
+        away_df = pd.DataFrame({'tid': aid,
+                                'w': (ag > hg).astype(int),
+                                'd': (ag == hg).astype(int),
+                                'l': (ag < hg).astype(int),
+                                'gd': ag - hg})
+        combined = pd.concat([home_df, away_df]).groupby('tid').sum().reset_index()
+        combined.columns = ['tid', 'seasonWinsNum_overall',
+                            'seasonDrawsNum_overall',
+                            'seasonLossesNum_overall',
+                            'seasonGoalDifference_overall']
+        df_teams['_tid_str'] = df_teams['team_id'].astype(str)
+        df_teams = df_teams.merge(combined,
+                                  left_on='_tid_str', right_on='tid',
+                                  how='left').drop(columns=['_tid_str', 'tid'],
+                                                   errors='ignore')
+        for col in ['seasonWinsNum_overall', 'seasonDrawsNum_overall',
+                    'seasonLossesNum_overall', 'seasonGoalDifference_overall']:
+            df_teams[col] = df_teams[col].fillna(0).astype(int)
+
+    if not df_teams.empty and 'cornersTotalAVG_overall' not in df_teams.columns:
+        c_for = pd.to_numeric(df_teams.get('cornersAVG_overall', 0),
+                              errors='coerce').fillna(0)
+        c_ag  = pd.to_numeric(df_teams.get('cornersAgainstAVG_overall', 0),
+                              errors='coerce').fillna(0)
+        df_teams['cornersTotalAVG_overall'] = c_for + c_ag
+
+    return df_teams, df_matches
+
+
+def get_team_row(df_teams: pd.DataFrame, team_id) -> dict:
+    row = df_teams[df_teams['team_id'].astype(str) == str(team_id)]
+    if row.empty:
+        return {}
+    return row.iloc[0].to_dict()
+
+
+def trio_bar_html(label, val_all, val_home, val_away,
+                  max_val=100, suffix="", pct=False) -> str:
+    def fmt(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{v:.0f}%" if pct else f"{v:.2f}{suffix}".rstrip('0').rstrip('.')
+
+    def bar(v, css_class):
+        pct_w = 0
+        if v is not None and not (isinstance(v, float) and pd.isna(v)) and max_val:
+            pct_w = min(100, (v / max_val) * 100)
+        return (f'<div class="bar-bg">'
+                f'<div class="bar-fill {css_class}" '
+                f'style="width:{pct_w:.1f}%"></div></div>')
+
+    rows = [("ALL", val_all, "bar-overall"),
+            ("H",   val_home, "bar-home"),
+            ("A",   val_away, "bar-away")]
+    bars_html = ""
+    for tag, val, css in rows:
+        bars_html += (f'<div class="trio-row">'
+                      f'<span class="trio-tag">{tag}</span>'
+                      f'{bar(val, css)}'
+                      f'<span class="trio-val">{fmt(val)}</span>'
+                      f'</div>')
+    return (f'<div class="trio-stat">'
+            f'<span class="trio-label">{label}</span>'
+            f'<div class="trio-bars">{bars_html}</div>'
+            f'</div>')
+
+
+def form_badges_html(form_str: str) -> str:
+    if not form_str or not isinstance(form_str, str):
+        return '<span style="color:var(--muted)">brak danych</span>'
+    badges = ""
+    for ch in form_str.upper():
+        if ch in "WDL":
+            badges += (f'<div class="form-badge form-{ch}">{ch}</div>')
+    return f'<div class="form-run">{badges}</div>'
+
+
 # ── ZAKŁADKI ──────────────────────────────────────────────────────────────────
 
 tabs = st.tabs([
     "📅 Mecze",
     "📰 Artykuły",
     "🏆 Wyniki",
+    "🏟 Drużyny",
     "📊 Statystyki",
-    "💼 Investor",
     "⚙️ Ustawienia",
 ])
 
@@ -707,9 +816,553 @@ with tabs[2]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — STATYSTYKI
+# TAB 4 — DRUŻYNY
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[3]:
+    st.markdown("""
+<style>
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --surface2: #21262d;
+  --border:   #30363d;
+  --accent:   #00d4aa;
+  --accent2:  #58a6ff;
+  --text:     #e6edf3;
+  --muted:    #8b949e;
+  --green:    #3fb950;
+  --red:      #f85149;
+  --yellow:   #d29922;
+}
+.league-table { background:var(--surface); border-radius:12px;
+  border:1px solid var(--border); overflow:hidden;
+  font-family:'DM Mono',monospace; }
+.league-table-header { background:var(--surface2); padding:12px 16px;
+  font-size:11px; font-weight:700; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--muted);
+  border-bottom:1px solid var(--border); }
+.lt-row { display:grid;
+  grid-template-columns:28px 1fr 36px 36px 36px 36px 52px 52px 44px;
+  gap:0; padding:9px 16px; border-bottom:1px solid var(--border);
+  font-size:13px; color:var(--text); }
+.lt-row:hover { background:var(--surface2); }
+.lt-row.selected { background:rgba(0,212,170,.08);
+  border-left:3px solid var(--accent); }
+.lt-row.zone-cl  { border-left:3px solid var(--accent2); }
+.lt-row.zone-rel { border-left:3px solid var(--red); }
+.lt-pos { color:var(--muted); font-size:12px; }
+.lt-name { font-weight:600; }
+.lt-num  { text-align:center; color:var(--muted); }
+.lt-ppg  { text-align:center; font-weight:700; color:var(--accent); }
+.lt-gd.pos { color:var(--green); }
+.lt-gd.neg { color:var(--red); }
+.stat-card { background:var(--surface); border:1px solid var(--border);
+  border-radius:10px; padding:16px; margin-bottom:12px; }
+.stat-card-title { font-size:10px; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--muted); margin-bottom:12px;
+  padding-bottom:8px; border-bottom:1px solid var(--border); }
+.trio-stat { display:grid; grid-template-columns:160px 1fr;
+  align-items:center; gap:8px; margin-bottom:10px; }
+.trio-label { font-size:12px; color:var(--muted); }
+.trio-bars  { display:flex; flex-direction:column; gap:3px; }
+.trio-row   { display:flex; align-items:center; gap:6px; font-size:11px; }
+.trio-tag   { width:24px; text-align:center; font-size:9px; font-weight:700;
+  letter-spacing:.05em; color:var(--muted); flex-shrink:0; }
+.bar-bg     { flex:1; height:6px; background:var(--surface2);
+  border-radius:3px; overflow:hidden; }
+.bar-fill   { height:100%; border-radius:3px; transition:width .4s ease; }
+.bar-overall { background:var(--accent); }
+.bar-home    { background:var(--accent2); }
+.bar-away    { background:var(--yellow); }
+.trio-val   { width:36px; text-align:right; font-size:12px;
+  font-weight:600; color:var(--text); }
+.big-metrics { display:grid; grid-template-columns:repeat(4,1fr);
+  gap:8px; margin-bottom:12px; }
+.big-metric  { background:var(--surface2); border-radius:8px;
+  padding:12px; text-align:center; }
+.big-metric-val   { font-size:22px; font-weight:800; color:var(--accent);
+  line-height:1; }
+.big-metric-label { font-size:10px; color:var(--muted); margin-top:4px;
+  text-transform:uppercase; letter-spacing:.08em; }
+.form-run   { display:flex; gap:4px; flex-wrap:wrap; }
+.form-badge { width:22px; height:22px; border-radius:4px; display:flex;
+  align-items:center; justify-content:center; font-size:11px;
+  font-weight:800; }
+.form-W { background:var(--green); color:#fff; }
+.form-D { background:var(--yellow); color:#fff; }
+.form-L { background:var(--red); color:#fff; }
+.rank-row { display:grid; grid-template-columns:24px 1fr 120px 56px;
+  gap:8px; align-items:center; padding:7px 0;
+  border-bottom:1px solid var(--border); font-size:13px; }
+.rank-pos { color:var(--muted); font-size:11px; text-align:center; }
+.rank-name { font-weight:600; }
+.rank-bar-wrap { background:var(--surface2); height:8px;
+  border-radius:4px; overflow:hidden; }
+.rank-bar  { height:100%; border-radius:4px; }
+.rank-val  { text-align:right; font-weight:700; color:var(--accent); }
+.compare-row { display:grid; grid-template-columns:1fr 80px 1fr;
+  gap:8px; align-items:center; padding:8px 0;
+  border-bottom:1px solid var(--border); font-size:13px; }
+.compare-val-a   { text-align:right; font-weight:700; }
+.compare-label   { text-align:center; font-size:10px; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.07em; }
+.compare-val-b   { text-align:left; font-weight:700; }
+.compare-winner-a { color:var(--green); }
+.compare-winner-b { color:var(--red); }
+.compare-tie      { color:var(--muted); }
+.team-header { display:flex; align-items:center; gap:16px; padding:20px;
+  background:linear-gradient(135deg,var(--surface) 0%,var(--surface2) 100%);
+  border:1px solid var(--border); border-radius:12px; margin-bottom:16px; }
+.team-name-big  { font-size:26px; font-weight:900; color:var(--text);
+  letter-spacing:-.02em; }
+.team-meta      { font-size:12px; color:var(--muted); margin-top:4px; }
+.team-pos-badge { background:var(--accent); color:#000; font-weight:800;
+  font-size:18px; width:44px; height:44px; border-radius:8px;
+  display:flex; align-items:center; justify-content:center;
+  flex-shrink:0; }
+</style>
+""", unsafe_allow_html=True)
+
+    # ── Wybór ligi ──────────────────────────────────────────────────────────
+    _col_sv, _col_no, _col_fi = st.columns(3)
+    _cur_liga = st.session_state.get("team_league", "allsvenskan")
+    with _col_sv:
+        if st.button("🇸🇪 Allsvenskan", use_container_width=True,
+                     type="primary" if _cur_liga == "allsvenskan" else "secondary",
+                     key="tl_sv"):
+            st.session_state["team_league"] = "allsvenskan"
+            st.rerun()
+    with _col_no:
+        if st.button("🇳🇴 Eliteserien", use_container_width=True,
+                     type="primary" if _cur_liga == "eliteserien" else "secondary",
+                     key="tl_no"):
+            st.session_state["team_league"] = "eliteserien"
+            st.rerun()
+    with _col_fi:
+        if st.button("🇫🇮 Veikkausliiga", use_container_width=True,
+                     type="primary" if _cur_liga == "veikkausliiga" else "secondary",
+                     key="tl_fi"):
+            st.session_state["team_league"] = "veikkausliiga"
+            st.rerun()
+
+    liga = st.session_state.get("team_league", "allsvenskan")
+    _df_teams, _df_matches = load_league_data(liga)
+
+    if _df_teams.empty:
+        st.warning("Brak danych. Pobierz w Ustawieniach: Pobierz dane dzienne lub Tygodniowy retren.")
+        st.stop()
+
+    # ── Layout dwukolumnowy ──────────────────────────────────────────────────
+    _col_left, _col_right = st.columns([1, 2.4], gap="medium")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # LEWA — tabela ligowa
+    # ════════════════════════════════════════════════════════════════════════
+    with _col_left:
+        _liga_names = {
+            "allsvenskan":   "🇸🇪 Allsvenskan 2026",
+            "eliteserien":   "🇳🇴 Eliteserien 2026",
+            "veikkausliiga": "🇫🇮 Veikkausliiga 2026",
+        }
+        st.markdown(
+            f'<div class="league-table-header">{_liga_names[liga]}</div>',
+            unsafe_allow_html=True)
+
+        _pos_col = 'leaguePosition_overall'
+        if _pos_col in _df_teams.columns:
+            _df_sorted = _df_teams.sort_values(_pos_col).reset_index(drop=True)
+        else:
+            _df_sorted = _df_teams.reset_index(drop=True)
+
+        st.markdown("""
+<div class="league-table">
+<div class="lt-row" style="color:var(--muted);font-size:10px;font-weight:700;
+letter-spacing:.08em;text-transform:uppercase;border-bottom:2px solid var(--border);
+background:var(--surface2)">
+  <span>#</span><span>Drużyna</span>
+  <span class="lt-num">M</span><span class="lt-num">W</span>
+  <span class="lt-num">D</span><span class="lt-num">L</span>
+  <span class="lt-num">GD</span>
+  <span class="lt-ppg">PPG</span><span class="lt-num">Pkt</span>
+</div>""", unsafe_allow_html=True)
+
+        _selected_team = st.session_state.get("selected_team_id", None)
+        _n_teams = len(_df_sorted)
+        for _, _row in _df_sorted.iterrows():
+            _pos  = int(safe_float(_row.get(_pos_col, 0)))
+            _name = _row.get('team_name', _row.get('name', '?'))
+            _tid  = str(_row.get('team_id', _row.get('id', '')))
+            _mp   = int(safe_float(_row.get('seasonMatchesPlayed_overall', 0)))
+            _w    = int(safe_float(_row.get('seasonWinsNum_overall', 0)))
+            _d    = int(safe_float(_row.get('seasonDrawsNum_overall', 0)))
+            _l    = int(safe_float(_row.get('seasonLossesNum_overall', 0)))
+            _gd   = int(safe_float(_row.get('seasonGoalDifference_overall', 0)))
+            _ppg  = safe_float(_row.get('seasonPPG_overall', 0))
+            _pts  = _w * 3 + _d
+            _gd_str = f"+{_gd}" if _gd > 0 else str(_gd)
+            _gd_cls = "pos" if _gd > 0 else ("neg" if _gd < 0 else "")
+            _zone   = ""
+            if _pos <= 2:
+                _zone = "zone-cl"
+            elif _pos >= _n_teams - 1:
+                _zone = "zone-rel"
+            _sel_cls = "selected" if _tid == str(_selected_team) else ""
+            st.markdown(f"""
+<div class="lt-row {_zone} {_sel_cls}">
+  <span class="lt-pos">{_pos}</span>
+  <span class="lt-name">{_name}</span>
+  <span class="lt-num">{_mp}</span>
+  <span class="lt-num">{_w}</span>
+  <span class="lt-num">{_d}</span>
+  <span class="lt-num">{_l}</span>
+  <span class="lt-num lt-gd {_gd_cls}">{_gd_str}</span>
+  <span class="lt-ppg">{_ppg:.2f}</span>
+  <span class="lt-num">{_pts}</span>
+</div>""", unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("""
+<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.8">
+<span style="color:var(--accent2)">■</span> Europejskie puchary&nbsp;&nbsp;
+<span style="color:var(--red)">■</span> Strefa spadkowa
+</div>""", unsafe_allow_html=True)
+
+        st.divider()
+        _name_col = 'team_name' if 'team_name' in _df_sorted.columns else 'name'
+        _id_col   = 'team_id'   if 'team_id'   in _df_sorted.columns else 'id'
+        _team_names = _df_sorted[_name_col].tolist()
+        _team_ids   = _df_sorted[_id_col].tolist()
+
+        _sel_name = st.selectbox("Wybierz drużynę →", _team_names,
+                                 key="team_select_left")
+        _sel_idx = _team_names.index(_sel_name)
+        st.session_state["selected_team_id"] = _team_ids[_sel_idx]
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PRAWA — widok interaktywny
+    # ════════════════════════════════════════════════════════════════════════
+    with _col_right:
+        _view_mode = st.radio(
+            "Widok",
+            ["📋 Profil drużyny", "⚔️ Porównanie drużyn", "🏆 Rankingi"],
+            horizontal=True,
+            key="team_view_mode",
+            label_visibility="collapsed")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── PROFIL DRUŻYNY ──────────────────────────────────────────────────
+        if _view_mode == "📋 Profil drużyny":
+            _td = get_team_row(_df_teams,
+                               st.session_state.get("selected_team_id",
+                                                    _team_ids[0]))
+            if not _td:
+                st.info("Wybierz drużynę z listy.")
+            else:
+                _t_name = _td.get('team_name', _td.get('name', '?'))
+                _t_pos  = int(safe_float(_td.get(_pos_col, 0)))
+                _t_mp   = int(safe_float(_td.get('seasonMatchesPlayed_overall', 0)))
+                _ppg    = safe_float(_td.get('seasonPPG_overall'))
+                _scored = safe_float(_td.get('seasonScoredAVG_overall'))
+                _conc   = safe_float(_td.get('seasonConcededAVG_overall'))
+                _xg_for = safe_float(_td.get('xg_for_avg_overall'))
+                _xg_ag  = safe_float(_td.get('xg_against_avg_overall'))
+                _btts   = safe_float(_td.get('seasonBTTSPercentage_overall'))
+                _o25    = safe_float(_td.get('seasonOver25Percentage_overall'))
+                _c_all  = safe_float(_td.get('cornersAVG_overall'))
+                _c_ag   = safe_float(_td.get('cornersAgainstAVG_overall'))
+                _ct     = safe_float(_td.get('cornersTotalAVG_overall',
+                                             _c_all + _c_ag))
+                _ppg_h  = safe_float(_td.get('seasonPPG_home'))
+                _ppg_a  = safe_float(_td.get('seasonPPG_away'))
+                _sc_h   = safe_float(_td.get('seasonScoredAVG_home'))
+                _sc_a   = safe_float(_td.get('seasonScoredAVG_away'))
+                _cn_h   = safe_float(_td.get('seasonConcededAVG_home'))
+                _cn_a   = safe_float(_td.get('seasonConcededAVG_away'))
+                _o25_h  = safe_float(_td.get('seasonOver25Percentage_home'))
+                _o25_a  = safe_float(_td.get('seasonOver25Percentage_away'))
+                _bt_h   = safe_float(_td.get('seasonBTTSPercentage_home'))
+                _bt_a   = safe_float(_td.get('seasonBTTSPercentage_away'))
+                _c_h    = safe_float(_td.get('cornersAVG_home'))
+                _c_a2   = safe_float(_td.get('cornersAVG_away'))
+                _o95    = safe_float(_td.get('over95CornersPercentage_overall'))
+                _o95_h  = safe_float(_td.get('over95CornersPercentage_home'))
+                _o95_a  = safe_float(_td.get('over95CornersPercentage_away'))
+                _xgf_h  = safe_float(_td.get('xg_for_avg_home'))
+                _xgf_a  = safe_float(_td.get('xg_for_avg_away'))
+                _xga_h  = safe_float(_td.get('xg_against_avg_home'))
+                _xga_a  = safe_float(_td.get('xg_against_avg_away'))
+                _k_all  = safe_float(_td.get('cardsAVG_overall'))
+                _k_h    = safe_float(_td.get('cardsAVG_home'))
+                _k_a    = safe_float(_td.get('cardsAVG_away'))
+                _win_pct = safe_float(_td.get('winPercentage_overall'))
+
+                st.markdown(f"""
+<div class="team-header">
+  <div class="team-pos-badge">{_t_pos}</div>
+  <div>
+    <div class="team-name-big">{_t_name}</div>
+    <div class="team-meta">{_t_mp} meczów · Win% {_win_pct:.0f}%</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                st.markdown(f"""
+<div class="big-metrics">
+  <div class="big-metric">
+    <div class="big-metric-val">{_ppg:.2f}</div>
+    <div class="big-metric-label">PPG</div>
+  </div>
+  <div class="big-metric">
+    <div class="big-metric-val" style="color:var(--green)">{_scored:.2f}</div>
+    <div class="big-metric-label">Śr. gole</div>
+  </div>
+  <div class="big-metric">
+    <div class="big-metric-val" style="color:var(--red)">{_conc:.2f}</div>
+    <div class="big-metric-label">Śr. stracone</div>
+  </div>
+  <div class="big-metric">
+    <div class="big-metric-val">{_xg_for:.2f}</div>
+    <div class="big-metric-label">xG For</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                _sc1, _sc2 = st.columns(2)
+                with _sc1:
+                    _html_l = (
+                        '<div class="stat-card">'
+                        '<div class="stat-card-title">⚽ Gole i wyniki</div>'
+                        + trio_bar_html("PPG", _ppg, _ppg_h, _ppg_a, max_val=3.0)
+                        + trio_bar_html("Strzelone / mecz", _scored, _sc_h, _sc_a, max_val=3.5)
+                        + trio_bar_html("Stracone / mecz", _conc, _cn_h, _cn_a, max_val=3.5)
+                        + f'<div class="trio-stat"><span class="trio-label">Win %</span>'
+                          f'<span style="font-weight:700;color:var(--accent)">{_win_pct:.0f}%</span></div>'
+                        + '</div>'
+                        '<div class="stat-card">'
+                        '<div class="stat-card-title">📊 Over / BTTS</div>'
+                        + trio_bar_html("Over 2.5 %", _o25, _o25_h, _o25_a, max_val=100, pct=True)
+                        + trio_bar_html("BTTS Yes %", _btts, _bt_h, _bt_a, max_val=100, pct=True)
+                        + '</div>'
+                    )
+                    st.markdown(_html_l, unsafe_allow_html=True)
+
+                with _sc2:
+                    _html_r = (
+                        '<div class="stat-card">'
+                        '<div class="stat-card-title">🚩 Corners</div>'
+                        + trio_bar_html("Corners zdobyte / mecz", _c_all, _c_h, _c_a2, max_val=10)
+                        + trio_bar_html("Corners oddane / mecz", _c_ag, None, None, max_val=10)
+                        + f'<div class="trio-stat"><span class="trio-label">Łącznie w meczu (avg)</span>'
+                          f'<span style="font-weight:700;color:var(--accent)">{_ct:.1f}</span></div>'
+                        + trio_bar_html("Over 9.5 %", _o95, _o95_h, _o95_a, max_val=100, pct=True)
+                        + '</div>'
+                        '<div class="stat-card">'
+                        '<div class="stat-card-title">📐 xG</div>'
+                        + trio_bar_html("xG tworzone", _xg_for, _xgf_h, _xgf_a, max_val=2.5)
+                        + trio_bar_html("xG dopuszczane", _xg_ag, _xga_h, _xga_a, max_val=2.5)
+                        + '</div>'
+                        '<div class="stat-card">'
+                        '<div class="stat-card-title">🟨 Kartki</div>'
+                        + trio_bar_html("Kartki drużyny / mecz", _k_all, _k_h, _k_a, max_val=5)
+                        + f'<div class="trio-stat"><span class="trio-label">Łącznie w meczu (est.)</span>'
+                          f'<span style="font-weight:700">{_k_all * 2:.1f}</span></div>'
+                        + '</div>'
+                    )
+                    st.markdown(_html_r, unsafe_allow_html=True)
+
+        # ── PORÓWNANIE DRUŻYN ───────────────────────────────────────────────
+        elif _view_mode == "⚔️ Porównanie drużyn":
+            _all_names = _df_teams[_name_col].tolist()
+            _all_ids   = _df_teams[_id_col].tolist()
+            _cc1, _cc2 = st.columns(2)
+            with _cc1:
+                _name_a = st.selectbox("Drużyna A", _all_names, index=0,
+                                       key="cmp_team_a")
+            with _cc2:
+                _name_b = st.selectbox("Drużyna B", _all_names,
+                                       index=min(1, len(_all_names) - 1),
+                                       key="cmp_team_b")
+            _td_a = get_team_row(_df_teams, _all_ids[_all_names.index(_name_a)])
+            _td_b = get_team_row(_df_teams, _all_ids[_all_names.index(_name_b)])
+            _ppg_a2 = safe_float(_td_a.get('seasonPPG_overall'))
+            _ppg_b2 = safe_float(_td_b.get('seasonPPG_overall'))
+            _pos_a2 = int(safe_float(_td_a.get(_pos_col, 0)))
+            _pos_b2 = int(safe_float(_td_b.get(_pos_col, 0)))
+
+            st.markdown(f"""
+<div style="display:grid;grid-template-columns:1fr 60px 1fr;gap:8px;
+align-items:center;background:var(--surface);border:1px solid var(--border);
+border-radius:12px;padding:20px;margin-bottom:16px">
+  <div style="text-align:right">
+    <div style="font-size:22px;font-weight:900">{_name_a}</div>
+    <div style="color:var(--muted);font-size:12px">#{_pos_a2} · {_ppg_a2:.2f} PPG</div>
+  </div>
+  <div style="text-align:center;font-size:14px;font-weight:700;color:var(--muted)">VS</div>
+  <div>
+    <div style="font-size:22px;font-weight:900">{_name_b}</div>
+    <div style="color:var(--muted);font-size:12px">#{_pos_b2} · {_ppg_b2:.2f} PPG</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            _cmp_cats = st.multiselect(
+                "Kategorie",
+                ["⚽ Gole", "🔄 BTTS", "🚩 Corners", "📐 xG", "🟨 Kartki"],
+                default=["⚽ Gole", "🔄 BTTS", "🚩 Corners", "📐 xG"],
+                key="cmp_cats")
+
+            def _cmp_row(label, key_a, td_a, td_b, key_b=None,
+                         higher=True, pct=False):
+                key_b = key_b or key_a
+                va = safe_float(td_a.get(key_a))
+                vb = safe_float(td_b.get(key_b))
+                fma = f"{va:.0f}%" if pct else f"{va:.2f}"
+                fmb = f"{vb:.0f}%" if pct else f"{vb:.2f}"
+                if higher:
+                    cls_a = "compare-winner-a" if va > vb else ("compare-winner-b" if va < vb else "compare-tie")
+                    cls_b = "compare-winner-a" if vb > va else ("compare-winner-b" if vb < va else "compare-tie")
+                else:
+                    cls_a = "compare-winner-a" if va < vb else ("compare-winner-b" if va > vb else "compare-tie")
+                    cls_b = "compare-winner-a" if vb < va else ("compare-winner-b" if vb > va else "compare-tie")
+                return (f'<div class="compare-row">'
+                        f'<span class="compare-val-a {cls_a}">{fma}</span>'
+                        f'<span class="compare-label">{label}</span>'
+                        f'<span class="compare-val-b {cls_b}">{fmb}</span>'
+                        f'</div>')
+
+            _html_cmp = '<div class="stat-card">'
+            _html_cmp += (
+                '<div class="compare-row" style="font-size:10px;font-weight:700;'
+                'color:var(--muted);letter-spacing:.08em;text-transform:uppercase">'
+                f'<span style="text-align:right">{_name_a}</span>'
+                f'<span class="compare-label">Stat</span>'
+                f'<span>{_name_b}</span></div>')
+
+            if "⚽ Gole" in _cmp_cats:
+                _html_cmp += '<div class="stat-card-title" style="margin-top:12px">⚽ Gole</div>'
+                for _lbl, _key in [
+                    ("PPG overall", 'seasonPPG_overall'),
+                    ("PPG dom", 'seasonPPG_home'),
+                    ("PPG wyjazd", 'seasonPPG_away'),
+                    ("Strzelone/mecz", 'seasonScoredAVG_overall'),
+                    ("Over 2.5 %", 'seasonOver25Percentage_overall'),
+                ]:
+                    _html_cmp += _cmp_row(_lbl, _key, _td_a, _td_b,
+                                          pct=("%" in _lbl))
+                _html_cmp += _cmp_row("Stracone/mecz", 'seasonConcededAVG_overall',
+                                      _td_a, _td_b, higher=False)
+
+            if "🔄 BTTS" in _cmp_cats:
+                _html_cmp += '<div class="stat-card-title" style="margin-top:12px">🔄 BTTS</div>'
+                for _lbl, _key in [
+                    ("BTTS Yes %", 'seasonBTTSPercentage_overall'),
+                    ("BTTS dom %", 'seasonBTTSPercentage_home'),
+                    ("BTTS wyjazd %", 'seasonBTTSPercentage_away'),
+                ]:
+                    _html_cmp += _cmp_row(_lbl, _key, _td_a, _td_b, pct=True)
+
+            if "🚩 Corners" in _cmp_cats:
+                _html_cmp += '<div class="stat-card-title" style="margin-top:12px">🚩 Corners</div>'
+                for _lbl, _key in [
+                    ("Corners zdobyte avg", 'cornersAVG_overall'),
+                    ("Corners dom", 'cornersAVG_home'),
+                    ("Corners wyjazd", 'cornersAVG_away'),
+                    ("Łącznie avg", 'cornersTotalAVG_overall'),
+                    ("Over 9.5 %", 'over95CornersPercentage_overall'),
+                ]:
+                    _html_cmp += _cmp_row(_lbl, _key, _td_a, _td_b,
+                                          pct=("%" in _lbl))
+
+            if "📐 xG" in _cmp_cats:
+                _html_cmp += '<div class="stat-card-title" style="margin-top:12px">📐 xG</div>'
+                for _lbl, _key in [
+                    ("xG tworzone", 'xg_for_avg_overall'),
+                    ("xG dom", 'xg_for_avg_home'),
+                    ("xG wyjazd", 'xg_for_avg_away'),
+                ]:
+                    _html_cmp += _cmp_row(_lbl, _key, _td_a, _td_b)
+                _html_cmp += _cmp_row("xG dopuszczane", 'xg_against_avg_overall',
+                                      _td_a, _td_b, higher=False)
+
+            if "🟨 Kartki" in _cmp_cats:
+                _html_cmp += '<div class="stat-card-title" style="margin-top:12px">🟨 Kartki</div>'
+                for _lbl, _key in [
+                    ("Kartki dom", 'cardsAVG_home'),
+                    ("Kartki wyjazd", 'cardsAVG_away'),
+                ]:
+                    _html_cmp += _cmp_row(_lbl, _key, _td_a, _td_b, higher=False)
+                _html_cmp += _cmp_row("Kartki avg", 'cardsAVG_overall',
+                                      _td_a, _td_b, higher=False)
+
+            _html_cmp += '</div>'
+            st.markdown(_html_cmp, unsafe_allow_html=True)
+
+        # ── RANKINGI ────────────────────────────────────────────────────────
+        elif _view_mode == "🏆 Rankingi":
+            _rank_stat = st.selectbox(
+                "Rankinguj wg statystyki",
+                ["PPG overall", "PPG dom", "PPG wyjazd",
+                 "Gole strzelone/mecz",
+                 "Gole stracone/mecz (mniej = lepiej)",
+                 "Bilans goli",
+                 "Over 2.5 %", "BTTS Yes %",
+                 "Corners zdobyte avg", "Corners łącznie avg",
+                 "Over 9.5 Corners %",
+                 "xG tworzone",
+                 "xG dopuszczane (mniej = lepiej)",
+                 "Kartki avg (mniej = lepiej)",
+                 "Win %"],
+                key="rank_stat_sel")
+
+            _stat_map = {
+                "PPG overall":                        ('seasonPPG_overall', True),
+                "PPG dom":                            ('seasonPPG_home', True),
+                "PPG wyjazd":                         ('seasonPPG_away', True),
+                "Gole strzelone/mecz":                ('seasonScoredAVG_overall', True),
+                "Gole stracone/mecz (mniej = lepiej)":('seasonConcededAVG_overall', False),
+                "Bilans goli":                        ('seasonGoalDifference_overall', True),
+                "Over 2.5 %":                         ('seasonOver25Percentage_overall', True),
+                "BTTS Yes %":                         ('seasonBTTSPercentage_overall', True),
+                "Corners zdobyte avg":                ('cornersAVG_overall', True),
+                "Corners łącznie avg":                ('cornersTotalAVG_overall', True),
+                "Over 9.5 Corners %":                 ('over95CornersPercentage_overall', True),
+                "xG tworzone":                        ('xg_for_avg_overall', True),
+                "xG dopuszczane (mniej = lepiej)":    ('xg_against_avg_overall', False),
+                "Kartki avg (mniej = lepiej)":        ('cardsAVG_overall', False),
+                "Win %":                              ('winPercentage_overall', True),
+            }
+
+            _col_key, _higher = _stat_map[_rank_stat]
+            _df_rank = _df_teams[[_name_col, _col_key]].copy()
+            _df_rank[_col_key] = pd.to_numeric(_df_rank[_col_key], errors='coerce')
+            _df_rank = (_df_rank.dropna()
+                        .sort_values(_col_key, ascending=not _higher)
+                        .reset_index(drop=True))
+            _max_val = _df_rank[_col_key].max() or 1
+            _bar_color = "var(--accent)" if _higher else "var(--red)"
+            _is_pct = "%" in _rank_stat
+
+            _html_rank = (f'<div class="stat-card">'
+                          f'<div class="stat-card-title">🏆 Ranking: {_rank_stat}</div>')
+            for _i, _rrow in _df_rank.iterrows():
+                _rval  = _rrow[_col_key]
+                _rpctw = (_rval / _max_val) * 100
+                _medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(_i, _i + 1)
+                _rfmt  = f"{_rval:.0f}%" if _is_pct else f"{_rval:.2f}"
+                _html_rank += f"""
+<div class="rank-row">
+  <span class="rank-pos">{_medal}</span>
+  <span class="rank-name">{_rrow[_name_col]}</span>
+  <div class="rank-bar-wrap">
+    <div class="rank-bar" style="width:{_rpctw:.1f}%;background:{_bar_color}"></div>
+  </div>
+  <span class="rank-val">{_rfmt}</span>
+</div>"""
+            _html_rank += '</div>'
+            st.markdown(_html_rank, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — STATYSTYKI
+# ═══════════════════════════════════════════════════════════════════════════════
+with tabs[4]:
     st.header("📊 Statystyki i ROI")
 
     # ── Wczytaj dane ─────────────────────────────
@@ -1170,95 +1823,6 @@ with tabs[3]:
         file_name=_fname,
         mime="application/json",
         key="stats_dl_json")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — INVESTOR
-# ═══════════════════════════════════════════════════════════════════════════════
-with tabs[4]:
-    st.header("Investor Center")
-
-    df_all = get_all_scorer_files()
-    df_settled = pd.DataFrame()
-    if not df_all.empty and "Wynik" in df_all.columns:
-        df_settled = df_all[
-            pd.to_numeric(df_all["Wynik"], errors="coerce").isin([0, 1])
-        ].copy()
-
-    if df_settled.empty:
-        st.info("Brak rozliczonych zakładów.")
-    else:
-        inv_bankroll = st.number_input(
-            "Bankroll (PLN)", 100.0, 100000.0, 1000.0, 100.0
-        )
-
-        roi_data = calc_roi(df_settled)
-        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-        r1c1.metric("Zakłady",  roi_data.get("n", 0))
-        r1c2.metric("Win Rate", f"{roi_data.get('win_rate', 0):.1%}")
-        r1c3.metric("ROI",      f"{roi_data.get('roi_pct', 0):+.1f}%")
-        r1c4.metric("Profit",   f"{roi_data.get('total_profit', 0):+.1f} PLN")
-
-        if "Profit_PLN" in df_settled.columns and "Data" in df_settled.columns:
-            st.subheader("📈 Equity Curve")
-            df_eq = df_settled.copy()
-            df_eq["Profit_PLN"] = pd.to_numeric(
-                df_eq["Profit_PLN"], errors="coerce"
-            ).fillna(0)
-            df_eq = df_eq.sort_values("Data")
-            df_eq["cum_profit"] = df_eq["Profit_PLN"].cumsum()
-            df_eq["bankroll"]   = inv_bankroll + df_eq["cum_profit"]
-
-            chart = (
-                alt.Chart(df_eq)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("Data:T", title="Data"),
-                    y=alt.Y("bankroll:Q", title="Bankroll (PLN)"),
-                    tooltip=["Data", "bankroll", "cum_profit"],
-                )
-                .properties(height=300)
-            )
-            st.altair_chart(chart, use_container_width=True)
-
-        if "Data" in df_settled.columns and "Profit_PLN" in df_settled.columns:
-            st.subheader("📊 Dzienny Profit")
-            df_day = (
-                df_settled.groupby("Data")["Profit_PLN"]
-                .apply(lambda x: pd.to_numeric(x, errors="coerce").sum())
-                .reset_index()
-            )
-            df_day.columns = ["Data", "Profit"]
-            bar = (
-                alt.Chart(df_day)
-                .mark_bar()
-                .encode(
-                    x="Data:T",
-                    y="Profit:Q",
-                    color=alt.condition(
-                        alt.datum.Profit >= 0,
-                        alt.value("#2ecc71"),
-                        alt.value("#e74c3c"),
-                    ),
-                    tooltip=["Data", "Profit"],
-                )
-                .properties(height=200)
-            )
-            st.altair_chart(bar, use_container_width=True)
-
-        st.subheader("🔍 Liga vs Combined")
-        if "Model_type" in df_settled.columns:
-            for mt in ["liga", "combined"]:
-                sub = df_settled[df_settled["Model_type"] == mt]
-                if not sub.empty:
-                    r = calc_roi(sub)
-                    st.write(
-                        f"**{mt.upper()}** — "
-                        f"n={r['n']} | "
-                        f"WR={r['win_rate']:.1%} | "
-                        f"ROI={r['roi_pct']:+.1f}% | "
-                        f"Profit={r['total_profit']:+.1f} PLN"
-                    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

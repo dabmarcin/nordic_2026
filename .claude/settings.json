@@ -22,7 +22,9 @@
       "Bash(python -m py_compile nordic_scorer.py)",
       "Bash(python nordic_scorer.py --test-normalize)",
       "Bash(python -m py_compile \"c:/Projects/nordic_2026/online_settle.py\")",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(python -c \"import sys; lines=sys.stdin.read\\(\\).splitlines\\(\\); print\\(lines[1][:200]\\)\")",
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('nordic_app.py', encoding='utf-8-sig'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
