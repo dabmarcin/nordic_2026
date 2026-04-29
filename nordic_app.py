@@ -441,28 +441,6 @@ with tabs[0]:
     else:
         df_show = pd.concat(dfs, ignore_index=True)
 
-        col_f1, col_f2, col_f3 = st.columns(3)
-        model_type_sel = col_f1.multiselect(
-            "Typ modelu", ["combined", "gpt_pred"], default=["combined", "gpt_pred"]
-        )
-        min_ev    = col_f2.slider("Min EV%",    -20, 50, -5)
-        min_score = col_f3.slider("Min Score%",  50, 80, 60)
-
-        if "Model_type" in df_show.columns:
-            df_show = df_show[df_show["Model_type"].isin(model_type_sel)]
-        if "EV[%]" in df_show.columns:
-            ev_num = (
-                df_show["EV[%]"].astype(str)
-                .str.replace("%", "").str.replace("+", "")
-                .pipe(pd.to_numeric, errors="coerce")
-            )
-            is_gpt = df_show.get("Model_type", pd.Series()).astype(str) == "gpt_pred"
-            df_show = df_show[is_gpt | (ev_num >= min_ev)]
-        if "Score[%]" in df_show.columns:
-            score_num = pd.to_numeric(df_show["Score[%]"], errors="coerce")
-            is_gpt    = df_show.get("Model_type", pd.Series()).astype(str) == "gpt_pred"
-            df_show   = df_show[is_gpt | (score_num >= min_score)]
-
         cols_show = [
             c for c in [
                 "Godzina", "Mecz", "_liga", "Model", "Model_type",
@@ -846,12 +824,13 @@ with tabs[3]:
   gap:0; padding:9px 16px; border-bottom:1px solid var(--border);
   font-size:13px; color:var(--text); }
 .lt-row:hover { background:var(--surface2); }
+.lt-row:hover .lt-name { color:#fff; }
 .lt-row.selected { background:rgba(0,212,170,.08);
   border-left:3px solid var(--accent); }
 .lt-row.zone-cl  { border-left:3px solid var(--accent2); }
 .lt-row.zone-rel { border-left:3px solid var(--red); }
 .lt-pos { color:var(--muted); font-size:12px; }
-.lt-name { font-weight:600; }
+.lt-name { font-weight:600; color:#000; }
 .lt-num  { text-align:center; color:var(--muted); }
 .lt-ppg  { text-align:center; font-weight:700; color:var(--accent); }
 .lt-gd.pos { color:var(--green); }

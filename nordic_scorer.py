@@ -41,7 +41,6 @@ FILTERS = {
     'result_away':   {'min_score': 62.0, 'min_odds': 1.40, 'max_odds': 5.0},
     'btts':          {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
     'over25':        {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
-    'corners_over':  {'min_score': 60.0, 'min_odds': 1.30, 'max_odds': 5.0},
     'corners_under': {'min_score': 60.0, 'min_odds': 1.30, 'max_odds': 5.0},
 }
 
@@ -595,50 +594,37 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
     results = []
 
     if model_name == 'corners':
-        p_over  = p
-        p_under = 1.0 - p
-
-        for direction, p_dir, odds_key, fkey in [
-            ('corners_over',  p_over,  'odds_corners_over_95',  'Over Corners'),
-            ('corners_under', p_under, 'odds_corners_under_95', 'Under Corners'),
-        ]:
-            odds   = features_dict.get(odds_key.replace('fkey', odds_key), 0.0)
-            odds_v = features_dict.get(odds_key, 0.0)
-            score_dir = p_dir * 100.0
-            flt = FILTERS[direction]
-            reasons = []
-            if score_dir < flt['min_score']:
-                reasons.append({'filter': 'MIN_SCORE', 'threshold': flt['min_score'],
-                                 'value': round(score_dir, 2), 'passed': False})
-            if odds_v < flt['min_odds']:
-                reasons.append({'filter': 'MIN_ODDS', 'threshold': flt['min_odds'],
-                                 'value': round(odds_v, 2), 'passed': False})
-            if odds_v > flt['max_odds']:
-                reasons.append({'filter': 'MAX_ODDS', 'threshold': flt['max_odds'],
-                                 'value': round(odds_v, 2), 'passed': False})
-            if reasons:
-                rejected.append({'match': match_label, 'model': direction,
-                                  'score_pct': round(score_dir, 1),
-                                  'odds': round(odds_v, 2),
-                                  'rejection_reasons': reasons})
-            else:
-                ev = (p_dir * odds_v - 1.0) * 100.0
-                stake = kelly_stake(p_dir, odds_v)
-                results.append({
-                    'model_name': model_name,
-                    'direction':  direction,
-                    'typ':        fkey,
-                    'score':      round(score_dir, 1),
-                    'p':          round(p_dir, 4),
-                    'odds':       round(odds_v, 2),
-                    'ev':         round(ev, 1),
-                    'stake':      round(stake, 1),
-                    'features':   X,
-                })
-
-        # Jeśli oba przeszły — wybierz wyższy EV
-        if len(results) == 2:
-            results = [max(results, key=lambda r: r['ev'])]
+        odds_v = features_dict.get('odds_corners_under_95', 0.0)
+        flt = FILTERS['corners_under']
+        reasons = []
+        if score < flt['min_score']:
+            reasons.append({'filter': 'MIN_SCORE', 'threshold': flt['min_score'],
+                             'value': round(score, 2), 'passed': False})
+        if odds_v < flt['min_odds']:
+            reasons.append({'filter': 'MIN_ODDS', 'threshold': flt['min_odds'],
+                             'value': round(odds_v, 2), 'passed': False})
+        if odds_v > flt['max_odds']:
+            reasons.append({'filter': 'MAX_ODDS', 'threshold': flt['max_odds'],
+                             'value': round(odds_v, 2), 'passed': False})
+        if reasons:
+            rejected.append({'match': match_label, 'model': 'corners_under',
+                              'score_pct': round(score, 1),
+                              'odds': round(odds_v, 2),
+                              'rejection_reasons': reasons})
+        else:
+            ev = (p * odds_v - 1.0) * 100.0
+            stake = kelly_stake(p, odds_v)
+            results.append({
+                'model_name': model_name,
+                'direction':  'corners_under',
+                'typ':        'Corners Under 9.5',
+                'score':      round(score, 1),
+                'p':          round(p, 4),
+                'odds':       round(odds_v, 2),
+                'ev':         round(ev, 1),
+                'stake':      round(stake, 1),
+                'features':   X,
+            })
         return results
 
     # Modele wynikowe / btts / over25
@@ -1053,7 +1039,7 @@ def main():
                     'filters': {
                         flt: {
                             'threshold': FILTERS.get(t['model'], FILTERS.get(
-                                'corners_over' if 'over' in t['typ'].lower() else 'corners_under', {})
+                                'corners_under', {})
                             ).get(flt.replace('min_', 'min_').replace('max_', 'max_'), None),
                             'value': (t['score'] if flt == 'min_score' else t['odds']),
                             'passed': True,
