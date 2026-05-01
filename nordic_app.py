@@ -1815,7 +1815,7 @@ with tabs[5]:
     col_d1, col_d2 = st.columns(2)
 
     with col_d1:
-        st.caption("Pobiera mecze na dziś i jutro + szczegóły meczów GPT")
+        st.caption("Pobiera mecze na dziś/jutro, aktualizuje tabelę ligową (teams + matches) + szczegóły GPT")
         if st.button("🔄 Pobierz dane dzienne"):
             with st.spinner("Pobieranie listy meczów..."):
                 rc, out, err = run_script("fetch_data.py", ["--daily"])

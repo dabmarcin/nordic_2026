@@ -356,27 +356,44 @@ def run_daily():
         }
         print(f"  ✅ {date_str} — {len(matches)} meczów → {csv_path}")
 
-    # Current teams 2026
+    # Current teams + matches 2026
     print()
-    print("  Pobieranie current teams 2026...")
-    teams_summary = {}
-    for sid, fname in [
-        (ALLSVENSKAN_2026_ID,   "allsvenskan_teams_2026.csv"),
-        (ELITESERIEN_2026_ID,   "eliteserien_teams_2026.csv"),
-        (VEIKKAUSLIIGA_2026_ID, "veikkausliiga_teams_2026.csv"),
+    print("  Pobieranie current teams + matches 2026...")
+    current_summary = {}
+    for sid, fname_teams, fname_matches in [
+        (ALLSVENSKAN_2026_ID,   "allsvenskan_teams_2026.csv",   "allsvenskan_matches_2026.csv"),
+        (ELITESERIEN_2026_ID,   "eliteserien_teams_2026.csv",   "eliteserien_matches_2026.csv"),
+        (VEIKKAUSLIIGA_2026_ID, "veikkausliiga_teams_2026.csv", "veikkausliiga_matches_2026.csv"),
     ]:
         league = ACTIVE_LEAGUE_NAMES[sid]
-        teams_path = os.path.join(CURRENT_DIR, fname)
+
+        # Teams
+        n_teams = 0
         try:
             time.sleep(0.5)
             df_teams = _fetch_teams(sid, f"{league} 2026 current")
-            df_teams.to_csv(teams_path, index=False, encoding="utf-8-sig")
-            teams_summary[league] = len(df_teams)
-            print(f"  ✅ {league.capitalize()} 2026: {len(df_teams)} drużyn")
+            df_teams.to_csv(os.path.join(CURRENT_DIR, fname_teams), index=False, encoding="utf-8-sig")
+            n_teams = len(df_teams)
+            print(f"  ✅ {league.capitalize()} teams: {n_teams} drużyn")
         except Exception as e:
             print(f"  ❌ {league} teams — błąd: {e}")
             _log_error(f"daily teams {league}: {e}")
-            teams_summary[league] = 0
+
+        # Matches (complete only)
+        n_matches = 0
+        try:
+            time.sleep(0.5)
+            matches = _fetch_all_pages(sid, f"{league} 2026 matches")
+            complete = [m for m in matches if str(m.get("status", "")).lower() == "complete"]
+            df_m = pd.DataFrame(complete)
+            df_m.to_csv(os.path.join(CURRENT_DIR, fname_matches), index=False, encoding="utf-8-sig")
+            n_matches = len(complete)
+            print(f"  ✅ {league.capitalize()} matches: {n_matches} complete meczów")
+        except Exception as e:
+            print(f"  ❌ {league} matches — błąd: {e}")
+            _log_error(f"daily matches {league}: {e}")
+
+        current_summary[league] = {"teams": n_teams, "matches": n_matches}
 
     # Podsumowanie
     print()
@@ -392,9 +409,9 @@ def run_daily():
         print(f"    Veikkausliiga: {s.get('veikkausliiga', 0)}")
         print(f"    Inne:          {s.get('other', 0)}")
     print("──────────────────────────────────────────")
-    print("  Current teams zaktualizowano:")
-    for lg, n in teams_summary.items():
-        print(f"    {lg.capitalize()} 2026: {n} drużyn")
+    print("  Current 2026 zaktualizowano:")
+    for lg, s in current_summary.items():
+        print(f"    {lg.capitalize():15} {s['teams']} drużyn, {s['matches']} complete meczów")
     print("══════════════════════════════════════════")
 
 
