@@ -27,7 +27,11 @@
       "Bash(python -c \"import ast, sys; ast.parse\\(open\\('nordic_app.py', encoding='utf-8-sig'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c ' *)",
       "Bash(py -c ' *)",
-      "Bash(py fetch_data.py --help)"
+      "Bash(py fetch_data.py --help)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Projects\\\\nordic_2026\" -Filter \"*nordic_scorer*\" -Recurse)",
+      "Bash(python normalize_scorers.py)",
+      "PowerShell(cd \"c:\\\\Projects\\\\nordic_2026\" ; $files = @\\(\"data\\\\telemetry\\\\Allsvenskan scorer\\\\allsvenskan_scorer_2026-04-26.csv\", \"data\\\\telemetry\\\\Eliteserien scorer\\\\eliteserien_scorer_2026-04-26.csv\"\\) ; foreach\\($f in $files\\) { if\\(Test-Path $f\\) { Write-Host \"`n[FILE] $\\(Split-Path -Leaf $f\\)\" ; Import-Csv $f -Encoding UTF8 | Select-Object Typ -Unique | Sort-Object Typ } })",
+      "PowerShell(cd \"c:\\\\Projects\\\\nordic_2026\" ; $f = \"data\\\\telemetry\\\\Allsvenskan scorer\\\\allsvenskan_scorer_2026-05-03.csv\" ; if\\(Test-Path $f\\) { Write-Host \"[FILE] $\\(Split-Path -Leaf $f\\)\" ; $csv = Import-Csv $f -Encoding UTF8 ; Write-Host \"Unikalne wartosci Typ:\" ; $csv.Typ | Sort-Object -Unique })"
     ]
   }
 }

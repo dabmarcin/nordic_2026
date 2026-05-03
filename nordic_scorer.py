@@ -122,13 +122,13 @@ def normalize_typ(typ: str,
         return 'X'
 
     if t_lower in ('over corners', 'corners over', 'over corner'):
-        return 'Corners Over 9.5'
+        return 'Over 9.5 corners'
 
     import re
     m = re.match(r'corners?\s+(over|under)\s+([\d.]+)', t_lower)
     if m:
         d = m.group(1).capitalize()
-        return f'Corners {d} {m.group(2)}'
+        return f'{d} {m.group(2)} corners'
 
     m = re.match(
         r'(over|under)\s+([\d.]+)'
@@ -210,8 +210,8 @@ if '--test-normalize' in sys.argv:
         ('Viking wygra lub remis',        'Fredrikstad','Viking',  'X2'),
         ('Double Chance GAIS Win/Draw',   'GAIS',       'Mjällby', '1X'),
         ('Double Chance Lahti',           'Lahti',      'Oulu',    '1X'),
-        ('Over Corners',                  '',           '',        'Corners Over 9.5'),
-        ('Corners Over 8.5',              '',           '',        'Corners Over 8.5'),
+        ('Over Corners',                  '',           '',        'Over 9.5 corners'),
+        ('Corners Over 8.5',              '',           '',        'Over 8.5 corners'),
         ('BTTS Yes + Over 2.5',           '',           '',        'Parlay'),
         ('Under 4.5 goals',               '',           '',        'Under 4.5'),
         ('Over 2.5 goli',                 '',           '',        'Over 2.5'),
@@ -344,6 +344,8 @@ def generate_gpt_predictions(match_id, home_name, away_name,
             if not kurs or float(kurs) <= 1.0:
                 continue
             kurs = round(float(kurs), 2)
+            if kurs < 1.31:
+                continue
 
             pinnacle = pin_by_kierunek.get(tip.get('kierunek', ''))
             ev_str = ''
@@ -617,7 +619,7 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
             results.append({
                 'model_name': model_name,
                 'direction':  'corners_under',
-                'typ':        'Corners Under 9.5',
+                'typ':        'Under 9.5 corners',
                 'score':      round(score, 1),
                 'p':          round(p, 4),
                 'odds':       round(odds_v, 2),
