@@ -585,6 +585,76 @@ def kelly_stake(p, odds):
     return min(max(BANKROLL * k * KELLY_FRAC, 0.0), MAX_STAKE)
 
 
+def merge_duplicate_predictions(all_rows):
+    """Łączy predykcje gdy gpt_pred i liga mają ten sam Typ dla tego samego meczu.
+    Zwraca listę z Model_type GPT+LIGA zamiast duplikatów.
+    """
+    if isinstance(all_rows, pd.DataFrame):
+        # Wersja dla DataFrame (z pandas)
+        if all_rows.empty:
+            return all_rows
+
+        grouped = {}
+        for idx, row in all_rows.iterrows():
+            key = (row['ID'], row['Mecz'], row['Typ'])
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append((idx, row))
+
+        result = []
+        for key, rows_with_same_type in grouped.items():
+            model_types_set = {r[1].get('Model_type', '') for r in rows_with_same_type}
+
+            # Jeśli mamy zarówno 'liga' i 'gpt_pred' z tym samym Typem
+            if 'liga' in model_types_set and 'gpt_pred' in model_types_set:
+                liga_row = next(r[1] for r in rows_with_same_type if r[1].get('Model_type') == 'liga')
+                gpt_row = next(r[1] for r in rows_with_same_type if r[1].get('Model_type') == 'gpt_pred')
+
+                merged = liga_row.copy()
+                merged['Model_type'] = 'GPT+LIGA'
+                merged['Model'] = 'Liga + GPT FootyStats'
+                if pd.notna(gpt_row.get('Pinnacle_odds')) and gpt_row.get('Pinnacle_odds') != '':
+                    merged['Pinnacle_odds'] = gpt_row['Pinnacle_odds']
+                result.append(merged)
+            else:
+                for _, r in rows_with_same_type:
+                    result.append(r)
+
+        if result:
+            return pd.DataFrame(result).reset_index(drop=True)
+        return all_rows
+    else:
+        # Wersja dla listy słowników (oryginalna)
+        if not all_rows:
+            return all_rows
+
+        grouped = {}
+        for row in all_rows:
+            key = (row['ID'], row['Mecz'], row['Typ'])
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(row)
+
+        result = []
+        for key, rows_with_same_type in grouped.items():
+            model_types_set = {r.get('Model_type', '') for r in rows_with_same_type}
+
+            if 'liga' in model_types_set and 'gpt_pred' in model_types_set:
+                liga_row = next(r for r in rows_with_same_type if r.get('Model_type') == 'liga')
+                gpt_row = next(r for r in rows_with_same_type if r.get('Model_type') == 'gpt_pred')
+
+                merged = dict(liga_row)
+                merged['Model_type'] = 'GPT+LIGA'
+                merged['Model'] = 'Liga + GPT FootyStats'
+                if gpt_row.get('Pinnacle_odds') and gpt_row.get('Pinnacle_odds') != '':
+                    merged['Pinnacle_odds'] = gpt_row['Pinnacle_odds']
+                result.append(merged)
+            else:
+                result.extend(rows_with_same_type)
+
+        return result
+
+
 def predict_model(model_name, model, imputer, features_dict, row, rejected, match_label):
     feat_cols  = imputer['features']
     imp_vals   = imputer['imputation_values']
@@ -993,6 +1063,9 @@ def main():
             })
         for r in lg_gpt:
             rows.append({k: r[k] for k in csv_cols})
+
+        # Łączy duplikaty (ten sam Typ dla gpt_pred i liga)
+        rows = merge_duplicate_predictions(rows)
 
         if rows:
             out_df = pd.DataFrame(rows, columns=csv_cols)

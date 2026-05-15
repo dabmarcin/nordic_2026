@@ -1476,6 +1476,76 @@ with tabs[4]:
 
     st.divider()
 
+    # ── BLOK 4.5 — PER TYP NA LIGA ──────────────────
+    st.subheader("🔍 Per typ na ligę")
+
+    liga_col = next(
+        (c for c in ["league", "_liga", "Liga"] if c in df_flat.columns), None)
+
+    if liga_col and "Typ_norm" in df_flat.columns:
+        rows_typ_liga = []
+        for liga in sorted(df_flat[liga_col].dropna().unique()):
+            df_liga = df_flat[df_flat[liga_col] == liga]
+            for typ in sorted(df_liga["Typ_norm"].dropna().unique()):
+                sub = df_liga[df_liga["Typ_norm"] == typ].copy()
+                sub = apply_flat_stake(sub, stake)
+                wynik  = pd.to_numeric(sub["Wynik"],      errors="coerce")
+                profit = pd.to_numeric(sub["Profit_PLN"], errors="coerce")
+                kurs   = pd.to_numeric(sub["Kurs"],       errors="coerce")
+                n      = len(sub)
+                n_won  = int(wynik.fillna(0).sum())
+                wr     = n_won / n if n else 0.0
+                tot_stake  = n * stake
+                tot_profit = profit.fillna(0).sum()
+                roi        = (tot_profit / tot_stake * 100) if tot_stake else 0.0
+                avg_k      = kurs.mean() if not kurs.empty else 0.0
+                rows_typ_liga.append({
+                    "Liga": liga,
+                    "Typ": typ,
+                    "N": n,
+                    "Wygrane": n_won,
+                    "Win Rate": f"{wr:.0%}",
+                    "Śr. kurs": f"{avg_k:.2f}",
+                    "ROI": f"{roi:+.1f}%",
+                    "Profit": f"{tot_profit:+.1f} PLN",
+                    "_profit_val": tot_profit,
+                    "_roi_val": roi,
+                })
+
+        if rows_typ_liga:
+            df_typ_liga = pd.DataFrame(rows_typ_liga)
+            df_typ_liga_display = df_typ_liga.drop(columns=["_profit_val", "_roi_val"])
+            st.dataframe(df_typ_liga_display, use_container_width=True, hide_index=True)
+
+            col_chart1, col_chart2 = st.columns(2)
+
+            with col_chart1:
+                st.caption("**ROI per typ na ligę**")
+                chart_roi = alt.Chart(df_typ_liga).mark_bar().encode(
+                    x=alt.X("Liga:N", title="Liga"),
+                    y=alt.Y("_roi_val:Q", title="ROI %"),
+                    color=alt.Color("Typ:N", title="Typ"),
+                    tooltip=["Liga", "Typ", "_roi_val"],
+                ).properties(height=250).interactive()
+                st.altair_chart(chart_roi, use_container_width=True)
+
+            with col_chart2:
+                st.caption("**Profit per typ na ligę**")
+                chart_profit = alt.Chart(df_typ_liga).mark_bar().encode(
+                    x=alt.X("Liga:N", title="Liga"),
+                    y=alt.Y("_profit_val:Q", title="Profit PLN"),
+                    color=alt.condition(
+                        alt.datum._profit_val >= 0,
+                        alt.value("#2ecc71"),
+                        alt.value("#e74c3c")),
+                    tooltip=["Liga", "Typ", "_profit_val"],
+                ).properties(height=250).interactive()
+                st.altair_chart(chart_profit, use_container_width=True)
+    else:
+        st.info("Brak danych dla rozbicia typ/liga.")
+
+    st.divider()
+
     # ── BLOK 5 — PER PRZEDZIAŁ KURSOWY ───────────
     st.subheader("💰 Per przedział kursowy")
 
