@@ -36,7 +36,29 @@
       "Bash(Select-Object -First 20)",
       "Bash(python process_existing_predictions.py)",
       "Read(//mnt/c/Projects/nordic_2026/**)",
-      "Bash(powershell -Command \"Select-String -Path 'c:\\\\\\\\Projects\\\\\\\\nordic_2026\\\\\\\\nordic_app.py' -Pattern 'with tabs\\\\\\\\[4\\\\\\\\]' | Select-Object -ExpandProperty LineNumber\")"
+      "Bash(powershell -Command \"Select-String -Path 'c:\\\\\\\\Projects\\\\\\\\nordic_2026\\\\\\\\nordic_app.py' -Pattern 'with tabs\\\\\\\\[4\\\\\\\\]' | Select-Object -ExpandProperty LineNumber\")",
+      "Bash(Get-ChildItem -Path \"c:\\\\Projects\\\\nordic_2026\" -Recurse -Include \"*.py\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell(head -20)",
+      "Bash(git *)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(python -m py_compile nordic_backtest.py)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"c:\\Projects\\nordic_2026\" && git diff --name-only HEAD~1 HEAD 2>/dev/null | { read -r f; if echo \"$f\" | grep -qE '(train_models|api_client|fetch_data|build_dataset|nordic_config|nordic_scorer)\\.py|CLAUDE\\.md'; then critical=$(echo \"$f\" | grep -E '(train_models|api_client|fetch_data|build_dataset)\\.py' | head -1); if [ -n \"$critical\" ]; then echo '{\"systemMessage\": \"⚠️ CRITICAL MODULE CHANGED: ' \"$critical\"' — Update CLAUDE.md Architecture section if import/dependency structure changed. Current modules: train_models.py (ML), api_client.py (API), fetch_data.py (data ingestion), build_dataset.py (features).\"}'; fi; fi; } || echo '{}'",
+            "timeout": 10,
+            "statusMessage": "Checking for architecture changes..."
+          }
+        ]
+      }
     ]
   }
 }
