@@ -25,11 +25,15 @@ class NumpyEncoder(json.JSONEncoder):
 
 from nordic_config import (
     ALLSVENSKAN_DIR, ELITESERIEN_DIR, VEIKKAUSLIIGA_DIR,
+    MLS_DIR, CSL_DIR,
     DATA_DIR, REPORTS_DIR, H2H_CACHE,
     CURRENT_DIR,
     TEAMS_ALLSV_HIST, TEAMS_ELITE_HIST, TEAMS_VEIKK_HIST,
+    TEAMS_MLS_HIST, TEAMS_CSL_HIST,
     ALLSVENSKAN_HISTORICAL, ELITESERIEN_HISTORICAL, VEIKKAUSLIIGA_HISTORICAL,
+    MLS_HISTORICAL, CSL_HISTORICAL,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
+    MLS_2026_ID, CSL_2026_ID,
 )
 
 # ── POTENCJAŁY — próg niezerowego wypełnienia ─────────────────────────────────
@@ -41,6 +45,54 @@ POTENTIAL_COLS = [
     'team_a_xg_prematch', 'team_b_xg_prematch',
     'pre_match_home_ppg', 'pre_match_away_ppg',
 ]
+
+# ── KONFIGURACJA PER LIGA ──────────────────────────────────────────────────────
+
+LEAGUE_CONFIG = {
+    "nordic": {
+        "hist_dirs":  [ALLSVENSKAN_DIR, ELITESERIEN_DIR, VEIKKAUSLIIGA_DIR],
+        "teams_dirs": [TEAMS_ALLSV_HIST, TEAMS_ELITE_HIST, TEAMS_VEIKK_HIST],
+        "hist_seasons": [ALLSVENSKAN_HISTORICAL, ELITESERIEN_HISTORICAL, VEIKKAUSLIIGA_HISTORICAL],
+        "current_matches": [
+            ("allsvenskan",   ALLSVENSKAN_2026_ID),
+            ("eliteserien",   ELITESERIEN_2026_ID),
+            ("veikkausliiga", VEIKKAUSLIIGA_2026_ID),
+        ],
+        "current_teams": [
+            "allsvenskan_teams_2026.csv",
+            "eliteserien_teams_2026.csv",
+            "veikkausliiga_teams_2026.csv",
+        ],
+        "output": os.path.join(DATA_DIR, "training_dataset.csv"),
+        "league_flag": None,
+    },
+    "mls": {
+        "hist_dirs":  [MLS_DIR],
+        "teams_dirs": [TEAMS_MLS_HIST],
+        "hist_seasons": [MLS_HISTORICAL],
+        "current_matches": [
+            ("mls", MLS_2026_ID),
+        ],
+        "current_teams": [
+            "mls_teams_2026.csv",
+        ],
+        "output": os.path.join(DATA_DIR, "mls_training_dataset.csv"),
+        "league_flag": "is_mls",
+    },
+    "csl": {
+        "hist_dirs":  [CSL_DIR],
+        "teams_dirs": [TEAMS_CSL_HIST],
+        "hist_seasons": [CSL_HISTORICAL],
+        "current_matches": [
+            ("csl", CSL_2026_ID),
+        ],
+        "current_teams": [
+            "csl_teams_2026.csv",
+        ],
+        "output": os.path.join(DATA_DIR, "csl_training_dataset.csv"),
+        "league_flag": "is_csl",
+    },
+}
 
 # ── WCZYTANIE DANYCH ──────────────────────────────────────────────────────────
 
@@ -256,17 +308,23 @@ def compute_last5(df):
 
 # ── TEAMS LOOKUP ──────────────────────────────────────────────────────────────
 
-def load_teams_lookup() -> dict:
+def load_teams_lookup(league_key) -> dict:
+    """Load teams lookup for a specific league."""
     lookup = {}
+    config = LEAGUE_CONFIG.get(league_key)
+    if not config:
+        return lookup
 
-    for liga, hist_dir, season_list in [
-        ("allsvenskan",   TEAMS_ALLSV_HIST, ALLSVENSKAN_HISTORICAL),
-        ("eliteserien",   TEAMS_ELITE_HIST, ELITESERIEN_HISTORICAL),
-        ("veikkausliiga", TEAMS_VEIKK_HIST, VEIKKAUSLIIGA_HISTORICAL),
-    ]:
+    teams_dirs = config["teams_dirs"]
+    hist_seasons = config["hist_seasons"]
+    current_filenames = config["current_teams"]
+    current_match_list = config["current_matches"]
+
+    # Historical seasons
+    for teams_dir, season_list in zip(teams_dirs, hist_seasons):
         for season in season_list:
             sid = season["id"]
-            path = os.path.join(hist_dir, f"advanced_league_teams_{sid}.csv")
+            path = os.path.join(teams_dir, f"advanced_league_teams_{sid}.csv")
             if not os.path.isfile(path):
                 continue
             df = pd.read_csv(path, encoding='utf-8-sig')
@@ -278,13 +336,21 @@ def load_teams_lookup() -> dict:
                 if tid:
                     lookup[(tid, int(sid))] = row.to_dict()
 
-    for liga, filename, sid in [
-        ("allsvenskan",   "allsvenskan_teams_2026.csv",   ALLSVENSKAN_2026_ID),
-        ("eliteserien",   "eliteserien_teams_2026.csv",   ELITESERIEN_2026_ID),
-        ("veikkausliiga", "veikkausliiga_teams_2026.csv", VEIKKAUSLIIGA_2026_ID),
-    ]:
+    # Current 2026 season teams — map filename to season_id
+    filename_to_sid = {}
+    for league_name, sid in current_match_list:
+        if league_key == "nordic":
+            league_prefix = league_name
+        else:
+            league_prefix = league_key
+        filename_to_sid[f"{league_prefix}_teams_2026.csv"] = sid
+
+    for filename in current_filenames:
         path = os.path.join(CURRENT_DIR, filename)
         if not os.path.isfile(path):
+            continue
+        sid = filename_to_sid.get(filename)
+        if sid is None:
             continue
         df = pd.read_csv(path, encoding='utf-8-sig')
         for _, row in df.iterrows():
@@ -350,13 +416,292 @@ def get_team_stats(team_id, season_id, role: str, lookup: dict) -> dict:
     }
 
 
+# ── BUILD FOR LEAGUE ──────────────────────────────────────────────────────────
+
+def build_for_league(league_key: str):
+    """Build dataset for a specific league."""
+    config = LEAGUE_CONFIG.get(league_key)
+    if not config:
+        print(f"Błąd: nieznana liga '{league_key}'")
+        return
+
+    print(f"\n=== BUILD DATASET — {league_key.upper()} ===\n")
+
+    # ── KROK 1: wczytaj dane historyczne
+    hist_dirs = config["hist_dirs"]
+    hist_seasons = config["hist_seasons"]
+    dfs = []
+    counts = {}
+
+    # Flatten season lists for iteration
+    all_seasons = {}
+    for seasons_list in hist_seasons:
+        for season in seasons_list:
+            all_seasons[season["id"]] = season
+
+    for hist_dir in hist_dirs:
+        files = glob.glob(os.path.join(hist_dir, '*.csv'))
+        for f in files:
+            df = pd.read_csv(f, encoding='utf-8-sig')
+            df = df[df['status'] == 'complete'].copy()
+            sid = os.path.basename(f).replace('advanced_league_matches_', '').replace('.csv', '')
+            # Determine league name from directory
+            league_name = None
+            if 'allsvenskan' in hist_dir.lower():
+                league_name = 'allsvenskan'
+            elif 'eliteserien' in hist_dir.lower():
+                league_name = 'eliteserien'
+            elif 'veikkausliiga' in hist_dir.lower():
+                league_name = 'veikkausliiga'
+            elif 'mls' in hist_dir.lower():
+                league_name = 'mls'
+            elif 'csl' in hist_dir.lower():
+                league_name = 'csl'
+
+            if league_name:
+                df['league'] = league_name
+                df['season_id'] = sid
+                dfs.append(df)
+                counts[league_name] = counts.get(league_name, 0) + len(df)
+
+    if dfs:
+        df_all = pd.concat(dfs, ignore_index=True)
+        df_all = df_all.drop_duplicates(subset='id')
+        df_all = df_all.sort_values('date_unix').reset_index(drop=True)
+    else:
+        df_all = pd.DataFrame()
+
+    print("Wczytano historyczne:")
+    for season_list in hist_seasons:
+        for season in season_list:
+            season_name = season["name"]
+            sid = season["id"]
+            count = sum([df[df['season_id'] == str(sid)].shape[0] for df in dfs]) if dfs else 0
+            print(f"  {season_name:20} {count:4} meczów")
+    print(f"  {'Łącznie:':20} {len(df_all):4} meczów complete")
+
+    # ── KROK 1b: dołącz current matches 2026
+    current_counts = {}
+    current_match_list = config["current_matches"]
+
+    for league_name, sid in current_match_list:
+        if league_key == "nordic":
+            filename = f"{league_name}_matches_2026.csv"
+        else:
+            filename = f"{league_key}_matches_2026.csv"
+
+        path = os.path.join(CURRENT_DIR, filename)
+        if not os.path.isfile(path):
+            continue
+        df_cur = pd.read_csv(path, encoding='utf-8-sig')
+        if df_cur.empty:
+            continue
+        df_cur = df_cur[df_cur['status'] == 'complete'].copy()
+        if df_cur.empty:
+            continue
+        df_cur['league'] = league_name
+        df_cur['season_id'] = sid
+        current_counts[league_name] = len(df_cur)
+        df_all = pd.concat([df_all, df_cur], ignore_index=True)
+        print(f"  {league_name.capitalize():20} 2026 (current): {len(df_cur)} meczów complete")
+
+    if df_all.empty:
+        print(f"Błąd: brak danych dla ligi '{league_key}'")
+        return
+
+    df_all = df_all.drop_duplicates(subset='id')
+    df_all = df_all.sort_values('date_unix').reset_index(drop=True)
+    print(f"  {'Po dedup:':20} {len(df_all):4} meczów łącznie\n")
+
+    # ── KROK 1c: teams lookup
+    teams_lookup = load_teams_lookup(league_key)
+    print(f"Teams w lookup: {len(teams_lookup)} wpisów\n")
+
+    # ── KROK 2: konwersje
+    df_all['btts']      = df_all['btts'].astype(int)
+    df_all['over25']    = df_all['over25'].astype(int)
+    df_all['date_unix'] = pd.to_numeric(df_all['date_unix'], errors='coerce')
+
+    availability = check_potentials(df_all)
+    unavailable = [col for col, info in availability.items() if not info['used']]
+    available   = [col for col, info in availability.items() if info['used']]
+
+    if unavailable:
+        print("Cechy niedostępne (< 50% wypełnienia):")
+        for col in unavailable:
+            print(f"  {col}: {availability[col]['pct_filled']:.1f}%  → pomijam")
+        print()
+    else:
+        print("Wszystkie potencjały dostępne (>= 50% niezerowych).")
+        print()
+
+    # ── KROK 3: feature engineering
+
+    # Implied probability
+    df_all['implied_home'] = 1.0 / df_all['odds_ft_1']
+    df_all['implied_away'] = 1.0 / df_all['odds_ft_2']
+    df_all['implied_draw'] = 1.0 / df_all['odds_ft_x']
+    margin = df_all['implied_home'] + df_all['implied_away'] + df_all['implied_draw']
+    df_all['implied_home_norm'] = df_all['implied_home'] / margin
+    df_all['implied_away_norm'] = df_all['implied_away'] / margin
+    df_all['odds_diff_home_away'] = df_all['odds_ft_2'] - df_all['odds_ft_1']
+    df_all.drop(columns=['implied_home', 'implied_away', 'implied_draw'], inplace=True)
+
+    # Liga one-hot
+    if league_key == "nordic":
+        df_all['is_allsvenskan']   = (df_all['league'] == 'allsvenskan').astype(int)
+        df_all['is_eliteserien']   = (df_all['league'] == 'eliteserien').astype(int)
+        df_all['is_veikkausliiga'] = (df_all['league'] == 'veikkausliiga').astype(int)
+    else:
+        league_flag = config["league_flag"]
+        if league_flag:
+            df_all[league_flag] = 1
+
+    # Last-5 rolling bez leakage
+    last5_results, coverage = compute_last5(df_all)
+    for col, vals in last5_results.items():
+        df_all[col] = vals
+
+    # H2H features z cache
+    h2h_cols = ['h2h_btts_pct', 'h2h_over25_pct', 'h2h_home_win_pct',
+                'h2h_avg_goals', 'h2h_avg_corners', 'h2h_matches_count']
+    h2h_rows = []
+    h2h_with_cache = 0
+    for _, row in df_all.iterrows():
+        h2h = load_h2h_features(
+            match_id    = row['id'],
+            home_id     = row['homeID'],
+            away_id     = row['awayID'],
+            cutoff_unix = row['date_unix'],
+            cache_dir   = H2H_CACHE,
+        )
+        h2h_rows.append(h2h)
+        if h2h['h2h_matches_count'] >= 2:
+            h2h_with_cache += 1
+    h2h_df = pd.DataFrame(h2h_rows, index=df_all.index)
+    for col in h2h_cols:
+        df_all[col] = h2h_df[col]
+    h2h_neutral = len(df_all) - h2h_with_cache
+
+    # ── KROK 3b: team stats features
+    team_stats_rows = []
+    n_with_team_stats = 0
+    for _, row in df_all.iterrows():
+        sid = row.get('season_id', 0)
+        try:
+            sid = int(float(str(sid)))
+        except (TypeError, ValueError):
+            sid = 0
+        h_stats = get_team_stats(row['homeID'], sid, 'home', teams_lookup)
+        a_stats = get_team_stats(row['awayID'], sid, 'away', teams_lookup)
+        has_data = h_stats.get('home_team_matches_played', 0) > 0 or \
+                   a_stats.get('away_team_matches_played', 0) > 0
+        if has_data:
+            n_with_team_stats += 1
+        feat = {}
+        feat.update(h_stats)
+        feat.update(a_stats)
+        h_ppg = h_stats.get('home_team_ppg_home', np.nan)
+        a_ppg = a_stats.get('away_team_ppg_away', np.nan)
+        h_sc  = h_stats.get('home_team_scored_avg_home', np.nan)
+        a_sc  = a_stats.get('away_team_scored_avg_away', np.nan)
+        h_co  = h_stats.get('home_team_corners_avg_home', np.nan)
+        a_co  = a_stats.get('away_team_corners_avg_away', np.nan)
+        feat['diff_team_ppg']     = h_ppg - a_ppg if pd.notna(h_ppg) and pd.notna(a_ppg) else np.nan
+        feat['diff_team_scored']  = h_sc  - a_sc  if pd.notna(h_sc)  and pd.notna(a_sc)  else np.nan
+        feat['diff_team_corners'] = h_co  - a_co  if pd.notna(h_co)  and pd.notna(a_co)  else np.nan
+        team_stats_rows.append(feat)
+
+    team_stats_df = pd.DataFrame(team_stats_rows, index=df_all.index)
+    for col in team_stats_df.columns:
+        df_all[col] = team_stats_df[col]
+
+    # ── KROK 4: targety
+    df_all['target_btts']             = df_all['btts']
+    df_all['target_over25']           = df_all['over25']
+    df_all['target_corners_over95']   = (df_all['totalCornerCount'] > 9.5).astype(int)
+    df_all['target_result_home']      = (df_all['homeGoalCount'] > df_all['awayGoalCount']).astype(int)
+    df_all['target_result_away']      = (df_all['awayGoalCount'] > df_all['homeGoalCount']).astype(int)
+
+    # ── KROK 5: imputacja per liga (mediany) — last5 + team_stats
+    last5_cols = list(last5_results.keys())
+    team_stat_cols = [c for c in team_stats_df.columns
+                      if c in df_all.columns and df_all[c].isna().any()]
+    imputation_values = {}
+
+    unique_leagues = df_all['league'].unique() if 'league' in df_all.columns else ['unknown']
+    for lg in unique_leagues:
+        mask = df_all['league'] == lg
+        medians = {}
+        for col in last5_cols + team_stat_cols:
+            med = df_all.loc[mask, col].median()
+            medians[col] = round(float(med), 4) if pd.notna(med) else 0.0
+        imputation_values[lg] = medians
+        for col in last5_cols + team_stat_cols:
+            fill_mask = mask & df_all[col].isna()
+            df_all.loc[fill_mask, col] = medians[col]
+
+    # ── OUTPUT
+    targets = [
+        'target_btts', 'target_over25', 'target_corners_over95',
+        'target_result_home', 'target_result_away',
+    ]
+    print("Targety:")
+    for t in targets:
+        rate = df_all[t].mean() * 100
+        print(f"  {t:25} {rate:.1f}% pozytywnych")
+
+    n_with = sum(coverage)
+    n_total = len(coverage)
+    print(f"\nLast5 coverage:")
+    print(f"  Mecze z >= 2 meczami historycznymi: {n_with} ({n_with/n_total*100:.1f}%)")
+
+    print(f"\nH2H coverage:")
+    print(f"  Mecze z cache (n>=2):   {h2h_with_cache} ({h2h_with_cache/n_total*100:.1f}%)")
+    print(f"  Mecze neutral fallback: {h2h_neutral} ({h2h_neutral/n_total*100:.1f}%)")
+
+    n_without_team = n_total - n_with_team_stats
+    print(f"\nTeams coverage:")
+    print(f"  Mecze z team stats:   {n_with_team_stats} ({n_with_team_stats/n_total*100:.1f}%)")
+    print(f"  Mecze bez team stats: {n_without_team} ({n_without_team/n_total*100:.1f}%)")
+
+    if current_counts:
+        print(f"\nCurrent season complete:")
+        for lg in current_counts:
+            print(f"  {lg.capitalize():15} {current_counts[lg]} meczów")
+
+    out_path = config["output"]
+    df_all.to_csv(out_path, index=False, encoding='utf-8-sig')
+    print(f"\nZapisano: {out_path}")
+    print(f"  ({len(df_all)} wierszy, {len(df_all.columns)} kolumn)")
+
+    return out_path
+
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Build training datasets for one or more leagues"
+    )
+    parser.add_argument(
+        '--league',
+        choices=['nordic', 'mls', 'csl', 'all'],
+        default='nordic',
+        help='Liga do przebudowania datasetu (domyślnie: nordic)'
+    )
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
+    if args.league == 'all':
+        for league_key in ['nordic', 'mls', 'csl']:
+            build_for_league(league_key)
+    else:
+        build_for_league(args.league)
+
+    return
+
+    # Stary kod poniżej (zachowany dla referenci, ale nie będzie wykonywany)
     print("=== BUILD DATASET — Nordic 2026 ===\n")
 
     # ── KROK 1: wczytaj dane historyczne

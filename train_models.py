@@ -18,6 +18,7 @@ from sklearn.metrics import roc_auc_score, brier_score_loss
 from nordic_config import (
     DATA_DIR, REPORTS_DIR,
     MODELS_ALLSV, MODELS_ELITE, MODELS_VEIKK,
+    MODELS_MLS, MODELS_CSL,
 )
 
 # ── FEATURE SETS ──────────────────────────────────────────────────────────────
@@ -149,6 +150,21 @@ LEAGUE_SETS = {
     'veikkausliiga': ('veikkausliiga', MODELS_VEIKK),
 }
 
+LEAGUE_SETS_MLS = {
+    'mls': ('mls', MODELS_MLS),
+}
+
+LEAGUE_SETS_CSL = {
+    'csl': ('csl', MODELS_CSL),
+}
+
+# Dataset paths per league
+DATASET_PATHS = {
+    'nordic': os.path.join(DATA_DIR, 'training_dataset.csv'),
+    'mls':    os.path.join(DATA_DIR, 'mls_training_dataset.csv'),
+    'csl':    os.path.join(DATA_DIR, 'csl_training_dataset.csv'),
+}
+
 # ── POMOCNICZE ────────────────────────────────────────────────────────────────
 
 def filter_features(feature_list, df):
@@ -277,90 +293,117 @@ def run_compare(df, args_model):
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Train ML models for one or more leagues"
+    )
     parser.add_argument('--debug',   action='store_true')
     parser.add_argument('--compare', action='store_true')
     parser.add_argument('--model',   type=str, default=None,
                         choices=list(MODELS_CONFIG.keys()),
                         help='Trenuj tylko wybrany model')
+    parser.add_argument(
+        '--league',
+        choices=['nordic', 'mls', 'csl', 'all'],
+        default='nordic',
+        help='Liga do trenowania (domyślnie: nordic)'
+    )
     args = parser.parse_args()
 
-    dataset_path = os.path.join(DATA_DIR, 'training_dataset.csv')
-    if not os.path.exists(dataset_path):
-        print("BŁĄD: brak data/training_dataset.csv — uruchom najpierw build_dataset.py")
-        sys.exit(1)
+    # Determine which datasets and league sets to use
+    league_configs = []
+    if args.league == 'all':
+        league_configs = [
+            ('nordic', DATASET_PATHS['nordic'], LEAGUE_SETS),
+            ('mls',    DATASET_PATHS['mls'],    LEAGUE_SETS_MLS),
+            ('csl',    DATASET_PATHS['csl'],    LEAGUE_SETS_CSL),
+        ]
+    elif args.league == 'mls':
+        league_configs = [('mls',    DATASET_PATHS['mls'],    LEAGUE_SETS_MLS)]
+    elif args.league == 'csl':
+        league_configs = [('csl',    DATASET_PATHS['csl'],    LEAGUE_SETS_CSL)]
+    else:  # nordic
+        league_configs = [('nordic', DATASET_PATHS['nordic'], LEAGUE_SETS)]
 
-    df_all = pd.read_csv(dataset_path, encoding='utf-8-sig')
-    df_all = df_all.sort_values('date_unix').reset_index(drop=True)
+    for league_key, dataset_path, league_sets in league_configs:
+        if not os.path.exists(dataset_path):
+            print(f"BŁĄD: brak {dataset_path} — uruchom najpierw build_dataset.py --league {league_key}")
+            continue
 
-    if args.compare:
-        run_compare(df_all, args.model)
-        return
+        df_all = pd.read_csv(dataset_path, encoding='utf-8-sig')
+        df_all = df_all.sort_values('date_unix').reset_index(drop=True)
 
-    print("╔══ TRENING MODELI — Nordic 2026 ══════════════════╗")
+        if args.compare:
+            run_compare(df_all, args.model)
+            return
 
-    debug_report = {
-        'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
-        'datasets': {},
-        'models': {},
-    }
+        print(f"╔══ TRENING MODELI — {league_key.upper()} ══════════════════╗")
 
-    for league_key, (league_filter, out_dir) in LEAGUE_SETS.items():
-        if league_filter:
-            df_league = df_all[df_all['league'] == league_filter].copy().reset_index(drop=True)
-        else:
-            df_league = df_all.copy().reset_index(drop=True)
-
-        n = len(df_league)
-        debug_report['datasets'][league_key] = {'n_train': n}
-        debug_report['models'][league_key] = {}
-
-        table_rows = []
-        for model_name, cfg in MODELS_CONFIG.items():
-            if args.model and model_name != args.model:
-                continue
-            result = train_single(model_name, cfg, df_league)
-            model_path = save_model(result, model_name, out_dir)
-
-            table_rows.append({
-                'name':      model_name,
-                'pos_rate':  result['pos_rate'],
-                'auc_train': result['auc_train'],
-                'cv_mean':   result['cv_mean'],
-                'cv_std':    result['cv_std'],
-                'brier':     result['brier'],
-            })
-
-            debug_report['models'][league_key][model_name] = {
-                'n_train':            result['n_train'],
-                'positive_rate_pct':  round(result['pos_rate'] * 100, 1),
-                'auc_train':          result['auc_train'],
-                'auc_cv_scores':      result['cv_scores'],
-                'auc_cv_mean':        result['cv_mean'],
-                'auc_cv_std':         result['cv_std'],
-                'brier_score':        result['brier'],
-                'feature_importance': result['importance'],
-                'imputation_values':  result['imputation'],
-                'model_path':         model_path,
-                'warnings':           [],
-            }
-
-        label_map = {
-            'allsvenskan':   'ALLSVENSKAN',
-            'eliteserien':   'ELITESERIEN',
-            'veikkausliiga': 'VEIKKAUSLIIGA',
+        debug_report = {
+            'timestamp': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
+            'league': league_key,
+            'datasets': {},
+            'models': {},
         }
-        print_league_table(label_map[league_key], n, table_rows)
 
-    print("\n╚══════════════════════════════════════════════════╝\n")
+        for league_filter_key, (league_filter, out_dir) in league_sets.items():
+            if league_filter:
+                df_league = df_all[df_all['league'] == league_filter].copy().reset_index(drop=True)
+            else:
+                df_league = df_all.copy().reset_index(drop=True)
 
-    if args.debug:
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        ts = debug_report['timestamp']
-        debug_path = os.path.join(REPORTS_DIR, f'debug_training_{ts}.json')
-        with open(debug_path, 'w', encoding='utf-8') as f:
-            json.dump(debug_report, f, ensure_ascii=False, indent=2)
-        print(f"  Debug: {debug_path}")
+            n = len(df_league)
+            debug_report['datasets'][league_filter_key] = {'n_train': n}
+            debug_report['models'][league_filter_key] = {}
+
+            table_rows = []
+            for model_name, cfg in MODELS_CONFIG.items():
+                if args.model and model_name != args.model:
+                    continue
+                result = train_single(model_name, cfg, df_league)
+                model_path = save_model(result, model_name, out_dir)
+
+                table_rows.append({
+                    'name':      model_name,
+                    'pos_rate':  result['pos_rate'],
+                    'auc_train': result['auc_train'],
+                    'cv_mean':   result['cv_mean'],
+                    'cv_std':    result['cv_std'],
+                    'brier':     result['brier'],
+                })
+
+                debug_report['models'][league_filter_key][model_name] = {
+                    'n_train':            result['n_train'],
+                    'positive_rate_pct':  round(result['pos_rate'] * 100, 1),
+                    'auc_train':          result['auc_train'],
+                    'auc_cv_scores':      result['cv_scores'],
+                    'auc_cv_mean':        result['cv_mean'],
+                    'auc_cv_std':         result['cv_std'],
+                    'brier_score':        result['brier'],
+                    'feature_importance': result['importance'],
+                    'imputation_values':  result['imputation'],
+                    'model_path':         model_path,
+                    'warnings':           [],
+                }
+
+            label_map = {
+                'allsvenskan':   'ALLSVENSKAN',
+                'eliteserien':   'ELITESERIEN',
+                'veikkausliiga': 'VEIKKAUSLIIGA',
+                'mls':           'MLS',
+                'csl':           'CSL',
+            }
+            display_label = label_map.get(league_filter_key, league_filter_key.upper())
+            print_league_table(display_label, n, table_rows)
+
+        print("\n╚══════════════════════════════════════════════════╝\n")
+
+        if args.debug:
+            os.makedirs(REPORTS_DIR, exist_ok=True)
+            ts = debug_report['timestamp']
+            debug_path = os.path.join(REPORTS_DIR, f'debug_training_{ts}.json')
+            with open(debug_path, 'w', encoding='utf-8') as f:
+                json.dump(debug_report, f, ensure_ascii=False, indent=2)
+            print(f"  Debug: {debug_path}")
 
 
 if __name__ == '__main__':
