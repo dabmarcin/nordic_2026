@@ -71,8 +71,13 @@ data/telemetry/{league}_scorer/ (daily CSV logs)
 - **nordic_scorer.py** — Prediction & scoring:
   - `python nordic_scorer.py --daily` — Score current day's predictions
   - FILTERS dict: min_score, min_odds, max_odds per prediction type
+  - **Prediction logic:**
+    - Over 2.5: Generated if model confidence > 50%
+    - Under 2.5: Generated if Over 2.5 model confidence < 50% (inverted: score = 100% - Over2.5_score, p recalculated for Kelly)
+    - Inverted score used for filtering and Kelly stake calculation, ensuring proper confidence weighting
   - BANKROLL=1000 PLN, KELLY_FRAC=0.25, MAX_STAKE=50 PLN
   - Outputs CSV to `data/telemetry/{league}_scorer/`
+  - Supports both Over 2.5 and Under 2.5 predictions with appropriate odds for all leagues
 
 - **nordic_app.py** — Streamlit dashboard:
   - `streamlit run nordic_app.py`

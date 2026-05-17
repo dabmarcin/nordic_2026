@@ -41,6 +41,7 @@ FILTERS = {
     'result_away':   {'min_score': 62.0, 'min_odds': 1.40, 'max_odds': 5.0},
     'btts':          {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
     'over25':        {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
+    'under25':       {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
     'corners_under': {'min_score': 60.0, 'min_odds': 1.30, 'max_odds': 5.0},
 }
 
@@ -78,11 +79,15 @@ def get_pinnacle_odds(match_id, model_name, typ=None):
                 return pin.get("corners_under_95")
             else:
                 return pin.get("corners_over_95")
+        if model_name == "over25":
+            if typ and "under" in str(typ).lower():
+                return pin.get("under25")
+            else:
+                return pin.get("over25")
         mapping = {
             "result_home": pin.get("home"),
             "result_away": pin.get("away"),
             "btts":        pin.get("btts_yes"),
-            "over25":      pin.get("over25"),
         }
         return mapping.get(model_name)
     except Exception:
@@ -712,9 +717,22 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
         'btts':        'BTTS Yes',
         'over25':      'Over 2.5',
     }
-    odds_key = odds_map[model_name]
+
+    # Special handling for over25 — if score < 50%, generate under25 instead
+    if model_name == 'over25' and score < 50.0:
+        score = 100.0 - score  # przelicz na pewność Under
+        p = score / 100.0      # zaktualizuj p dla Kelly
+        odds_key = 'odds_ft_under25'
+        direction = 'under25'
+        typ = 'Under 2.5'
+        flt = FILTERS['under25']
+    else:
+        odds_key = odds_map[model_name]
+        direction = model_name
+        typ = typ_map[model_name]
+        flt = FILTERS[model_name]
+
     odds_v   = features_dict.get(odds_key, 0.0)
-    flt = FILTERS[model_name]
     reasons = []
     if score < flt['min_score']:
         reasons.append({'filter': 'MIN_SCORE', 'threshold': flt['min_score'],
@@ -736,8 +754,8 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
     stake = kelly_stake(p, odds_v)
     return [{
         'model_name': model_name,
-        'direction':  model_name,
-        'typ':        typ_map[model_name],
+        'direction':  direction,
+        'typ':        typ,
         'score':      round(score, 1),
         'p':          round(p, 4),
         'odds':       round(odds_v, 2),
