@@ -735,3 +735,252 @@ def settle_daily_scorer(csv_path: str) -> Tuple[int, str]:
     if updated > 0:
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     return updated, f"Rozliczono {updated} zakladow."
+
+
+def repair_portfolio_signals(csv_path: str) -> Tuple[int, str]:
+    """
+    Naprawia Wynik w portfolio na podstawie Rezultatu i Typu (ignoruje czy zaklad jest juz rozliczony).
+    Uzywa logiki: jeśli Rezultat jest ustawiony, przelicza Wynik bez względu na poprzednią wartość.
+    """
+    if not os.path.isfile(csv_path):
+        return 0, f"Plik nie istnieje: {csv_path}"
+
+    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    if df.empty or "ID" not in df.columns:
+        return 0, "Brak wymaganych kolumn (ID)."
+
+    wynik_col = "Wynik" if "Wynik" in df.columns else None
+    if not wynik_col:
+        return 0, "Brak kolumny Wynik."
+
+    rezultat_col = "Rezultat" if "Rezultat" in df.columns else None
+    corners_col = "Corners" if "Corners" in df.columns else None
+    typ_col = "Typ" if "Typ" in df.columns else None
+
+    # Szukaj zakladow ze wskazanym Rezultatem (niezaleznie od Wynik)
+    mask_to_fix = pd.Series([False] * len(df))
+    if rezultat_col:
+        mask_to_fix = df[rezultat_col].notna() & (df[rezultat_col].astype(str).str.strip() != "")
+
+    if not mask_to_fix.any():
+        return 0, "Brak zakladow do naprawienia."
+
+    updated = 0
+    for idx in df[mask_to_fix].index:
+        # Rozłóż Rezultat na home_int i away_int
+        rezultat = str(df.at[idx, rezultat_col]).strip()
+        if ":" not in rezultat:
+            continue
+
+        try:
+            home_str, away_str = rezultat.split(":")
+            home_int = int(home_str)
+            away_int = int(away_str)
+        except (ValueError, IndexError):
+            continue
+
+        # Pobierz Typ
+        typ_str = str(df.at[idx, typ_col]).strip() if typ_col else ""
+        typ_upper = typ_str.upper()
+
+        win = None
+
+        # Logika rozliczania
+        if "AWAY" in typ_upper or "2" == typ_str:
+            win = 1 if away_int > home_int else 0
+        elif "HOME" in typ_upper or "1" == typ_str:
+            win = 1 if home_int > away_int else 0
+        elif typ_str.upper() in ("X", "DRAW"):
+            win = 1 if home_int == away_int else 0
+        elif "CORNERS" in typ_upper and "OVER" in typ_upper:
+            corners = df.at[idx, corners_col] if corners_col else None
+            if corners is not None:
+                try:
+                    corners_val = float(corners)
+                    line = None
+                    m_line = _re.search(r'(\d+(?:\.\d+)?)', typ_str)
+                    if m_line:
+                        line = float(m_line.group(1))
+                    if line is not None:
+                        win = 1 if corners_val > line else 0
+                except (ValueError, TypeError):
+                    pass
+        elif "CORNERS" in typ_upper and "UNDER" in typ_upper:
+            corners = df.at[idx, corners_col] if corners_col else None
+            if corners is not None:
+                try:
+                    corners_val = float(corners)
+                    line = None
+                    m_line = _re.search(r'(\d+(?:\.\d+)?)', typ_str)
+                    if m_line:
+                        line = float(m_line.group(1))
+                    if line is not None:
+                        win = 1 if corners_val < line else 0
+                except (ValueError, TypeError):
+                    pass
+        elif "BTTS" in typ_upper:
+            if "YES" in typ_upper or "TAK" in typ_upper:
+                win = 1 if (home_int > 0 and away_int > 0) else 0
+            elif "NO" in typ_upper or "NIE" in typ_upper:
+                win = 1 if (home_int == 0 or away_int == 0) else 0
+        elif "OVER" in typ_upper and "2.5" in typ_str:
+            total_goals_int = home_int + away_int
+            win = 1 if total_goals_int > 2 else 0
+        elif "UNDER" in typ_upper and "2.5" in typ_str:
+            total_goals_int = home_int + away_int
+            win = 1 if total_goals_int < 3 else 0
+
+        if win is None:
+            continue
+
+        old_win = df.at[idx, wynik_col]
+        df.at[idx, wynik_col] = win
+
+        # Przelicz Profit_PLN
+        if "Profit_PLN" in df.columns and "Stake_PLN" in df.columns and "Kurs" in df.columns:
+            try:
+                stake = pd.to_numeric(df.at[idx, "Stake_PLN"], errors="coerce") or 100.0
+                kurs = pd.to_numeric(df.at[idx, "Kurs"], errors="coerce") or 1.0
+                df.at[idx, "Profit_PLN"] = round(stake * (kurs - 1) if win == 1 else -stake, 2)
+            except:
+                pass
+
+        if old_win != win:
+            updated += 1
+
+    if updated > 0:
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    return updated, f"Naprawiono {updated} zakladow."
+
+
+def settle_portfolio_signals(csv_path: str) -> Tuple[int, str]:
+    """
+    Rozlicza plik portfolio_*.csv na podstawie Signal_ID i Typu.
+    Obsługuje: Away Win, Home Win, Draw, Over X.5 Corners, Under X.5 Corners, BTTS Yes/No, Over/Under 2.5
+    """
+    if not os.path.isfile(csv_path):
+        return 0, f"Plik nie istnieje: {csv_path}"
+
+    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    if df.empty or "ID" not in df.columns:
+        return 0, "Brak wymaganych kolumn (ID)."
+
+    # Sprawdź kolumny
+    wynik_col = "Wynik" if "Wynik" in df.columns else None
+    if not wynik_col:
+        return 0, "Brak kolumny Wynik."
+
+    rezultat_col = "Rezultat" if "Rezultat" in df.columns else None
+    corners_col = "Corners" if "Corners" in df.columns else None
+    typ_col = "Typ" if "Typ" in df.columns else None
+    signal_col = "Signal_ID" if "Signal_ID" in df.columns else None
+
+    # Szukaj nierozliczonych
+    mask_pending = df.apply(
+        lambda r: _is_pending(r[wynik_col], r.get(rezultat_col) if rezultat_col else None),
+        axis=1,
+    )
+    if not mask_pending.any():
+        return 0, "Wszystkie zaklady sa juz rozliczone."
+
+    matches_by_id = _fetch_matches_by_id(df)
+    if not matches_by_id:
+        return 0, "Brak danych z API (sprawdz klucz API i polaczenie)."
+
+    updated = 0
+    for idx in df[mask_pending].index:
+        mid = _normalize_id(df.at[idx, "ID"])
+        if mid is None or mid not in matches_by_id:
+            continue
+
+        m = matches_by_id[mid]
+        if str(m.get("status", "")).lower() != "complete":
+            continue
+
+        home = m.get("homeGoalCount")
+        away = m.get("awayGoalCount")
+        total_goals = m.get("totalGoalCount")
+        total_corners = m.get("totalCornerCount")
+
+        if home is None or away is None:
+            continue
+
+        home_int, away_int = int(home), int(away)
+        total_goals_int = int(total_goals) if total_goals is not None else home_int + away_int
+
+        try:
+            corners_val = int(total_corners) if total_corners is not None else None
+        except (TypeError, ValueError):
+            corners_val = None
+
+        # Pobierz Typ i Signal_ID
+        typ_str = str(df.at[idx, typ_col]).strip() if typ_col else ""
+        signal_id = str(df.at[idx, signal_col]).strip().lower() if signal_col else ""
+        typ_upper = typ_str.upper()
+
+        win = None
+
+        # Logika rozliczania na podstawie Typu i Signal_ID
+        if "AWAY" in typ_upper or "2" == typ_str:
+            # Away Win: away_goals > home_goals
+            win = 1 if away_int > home_int else 0
+        elif "HOME" in typ_upper or "1" == typ_str:
+            # Home Win: home_goals > away_goals
+            win = 1 if home_int > away_int else 0
+        elif typ_str.upper() in ("X", "DRAW"):
+            # Draw: home_goals == away_goals
+            win = 1 if home_int == away_int else 0
+        elif "CORNERS" in typ_upper and "OVER" in typ_upper:
+            # Over X.5 Corners: corners > X
+            line = None
+            m_line = _re.search(r'(\d+(?:\.\d+)?)', typ_str)
+            if m_line:
+                line = float(m_line.group(1))
+            if line is not None and corners_val is not None:
+                win = 1 if corners_val > line else 0
+        elif "CORNERS" in typ_upper and "UNDER" in typ_upper:
+            # Under X.5 Corners: corners < X
+            line = None
+            m_line = _re.search(r'(\d+(?:\.\d+)?)', typ_str)
+            if m_line:
+                line = float(m_line.group(1))
+            if line is not None and corners_val is not None:
+                win = 1 if corners_val < line else 0
+        elif "BTTS" in typ_upper:
+            if "YES" in typ_upper or "TAK" in typ_upper:
+                # BTTS Yes: oba zespoły strzelają
+                win = 1 if (home_int > 0 and away_int > 0) else 0
+            elif "NO" in typ_upper or "NIE" in typ_upper:
+                # BTTS No: co najmniej jeden zespół nie strzela
+                win = 1 if (home_int == 0 or away_int == 0) else 0
+        elif "OVER" in typ_upper and "2.5" in typ_str:
+            # Over 2.5: total_goals > 2.5
+            win = 1 if total_goals_int > 2 else 0
+        elif "UNDER" in typ_upper and "2.5" in typ_str:
+            # Under 2.5: total_goals < 2.5
+            win = 1 if total_goals_int < 3 else 0
+
+        if win is None:
+            continue
+
+        df.at[idx, wynik_col] = win
+
+        if rezultat_col:
+            df.at[idx, rezultat_col] = f"{home_int}:{away_int}"
+
+        if corners_col and corners_val is not None:
+            df.at[idx, corners_col] = corners_val
+
+        if "Profit_PLN" in df.columns and "Stake_PLN" in df.columns and "Kurs" in df.columns:
+            try:
+                stake = pd.to_numeric(df.at[idx, "Stake_PLN"], errors="coerce") or 100.0
+                kurs = pd.to_numeric(df.at[idx, "Kurs"], errors="coerce") or 1.0
+                df.at[idx, "Profit_PLN"] = round(stake * (kurs - 1) if win == 1 else -stake, 2)
+            except:
+                pass
+
+        updated += 1
+
+    if updated > 0:
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    return updated, f"Rozliczono {updated} zakladow."

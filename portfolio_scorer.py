@@ -5,10 +5,12 @@ import glob
 import json
 import argparse
 import datetime
+from datetime import timezone
 from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+import pytz
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
@@ -40,6 +42,50 @@ COMPETITION_TO_LEAGUE = {
     MLS_2026_ID:           'mls',
     CSL_2026_ID:           'csl',
 }
+
+# ── SIGNAL VALIDATION ─────────────────────────────────────────────────────────
+
+def validate_odds(signal_id, kurs):
+    """Sprawdź czy odds spełniają warunki sygnału"""
+    if signal_id not in PORTFOLIO_SIGNALS:
+        return False
+
+    signal = PORTFOLIO_SIGNALS[signal_id]
+
+    # Sygnały scorer-based nie mają ograniczeń
+    if signal.get('model_src') == 'scorer':
+        return True
+
+    # Parse condition
+    condition = signal.get('condition', '')
+    if not condition:
+        return True
+
+    # Obsługuj "X <= odds <= Y" i "odds >= X"
+    if ">=" in condition and "<=" in condition:
+        parts = condition.split("and")
+        min_str = parts[0].strip().split(">=")[1].strip()
+        max_str = parts[1].strip().split("<=")[1].strip()
+        min_val, max_val = float(min_str), float(max_str)
+        return min_val <= kurs <= max_val
+    elif ">=" in condition:
+        min_str = condition.split(">=")[1].strip()
+        min_val = float(min_str)
+        return kurs >= min_val
+
+    return True
+
+# ── KICKOFF FORMATTING ────────────────────────────────────────────────────────────
+
+def format_kickoff(date_unix, tz_str):
+    """Wyciągnij godzinę meczu z date_unix w lokalnej strefie czasowej."""
+    try:
+        dt_utc = datetime.datetime.fromtimestamp(int(date_unix), tz=timezone.utc)
+        tz = pytz.timezone(tz_str)
+        dt_local = dt_utc.astimezone(tz)
+        return dt_local.strftime('%H:%M')
+    except Exception:
+        return ""
 
 # ── DAILY FILE ────────────────────────────────────────────────────────────────
 
@@ -89,7 +135,12 @@ def generate_rule_signals(date_str):
             league = COMPETITION_TO_LEAGUE.get(comp_id, 'unknown')
             home_name = str(row.get('home_name', ''))
             away_name = str(row.get('away_name', ''))
-            kickoff = str(row.get('kickoff_time_text', ''))
+
+            # Wyciągnij godzinę z date_unix — MLS→NY, CSL→Shanghai
+            date_unix = row.get('date_unix', 0)
+            tz_for_league = 'America/New_York' if league == 'mls' else 'Asia/Shanghai'
+            kickoff = format_kickoff(date_unix, tz_for_league)
+
             mecz = f'{home_name} vs {away_name}'
             liga_abbr = LEAGUE_ABBR_MAP.get(league, league.upper()[:3])
 
@@ -101,97 +152,33 @@ def generate_rule_signals(date_str):
                 if signal_cfg.get('league') != league:
                     continue
 
-                # csl_draw
-                if signal_id == 'csl_draw':
-                    kurs = float(row.get('odds_ft_x') or 0)
-                    if 3.80 <= kurs <= 4.50:
-                        signals.append({
-                            'ID': match_id,
-                            'Data': date_str,
-                            'Godzina': kickoff,
-                            'Mecz': mecz,
-                            'Liga': liga_abbr,
-                            'Signal_ID': signal_id,
-                            'Signal_Label': signal_cfg.get('label', ''),
-                            'Tier': signal_cfg.get('tier', 'B'),
-                            'Source': 'rule',
-                            'Typ': signal_cfg.get('typ', ''),
-                            'Kurs': round(kurs, 2),
-                            'Stake_PLN': STAKE,
-                            'Wynik': '',
-                            'Rezultat': '',
-                            'Corners': '',
-                            'Profit_PLN': '',
-                        })
+                # Wyciągnij odds z odpowiedniej kolumny
+                odds_col = signal_cfg.get('odds_col', '')
+                kurs = float(row.get(odds_col) or 0)
 
-                # mls_away_win_hi
-                elif signal_id == 'mls_away_win_hi':
-                    kurs = float(row.get('odds_ft_2') or 0)
-                    if 3.80 <= kurs <= 5.00:
-                        signals.append({
-                            'ID': match_id,
-                            'Data': date_str,
-                            'Godzina': kickoff,
-                            'Mecz': mecz,
-                            'Liga': liga_abbr,
-                            'Signal_ID': signal_id,
-                            'Signal_Label': signal_cfg.get('label', ''),
-                            'Tier': signal_cfg.get('tier', 'A'),
-                            'Source': 'rule',
-                            'Typ': signal_cfg.get('typ', ''),
-                            'Kurs': round(kurs, 2),
-                            'Stake_PLN': STAKE,
-                            'Wynik': '',
-                            'Rezultat': '',
-                            'Corners': '',
-                            'Profit_PLN': '',
-                        })
+                # Waliduj odds
+                if not validate_odds(signal_id, kurs) or kurs <= 0:
+                    continue
 
-                # csl_under_corners
-                elif signal_id == 'csl_under_corners':
-                    kurs = float(row.get('odds_corners_under_95') or 0)
-                    if kurs >= 2.20:
-                        signals.append({
-                            'ID': match_id,
-                            'Data': date_str,
-                            'Godzina': kickoff,
-                            'Mecz': mecz,
-                            'Liga': liga_abbr,
-                            'Signal_ID': signal_id,
-                            'Signal_Label': signal_cfg.get('label', ''),
-                            'Tier': signal_cfg.get('tier', 'A'),
-                            'Source': 'rule',
-                            'Typ': signal_cfg.get('typ', ''),
-                            'Kurs': round(kurs, 2),
-                            'Stake_PLN': STAKE,
-                            'Wynik': '',
-                            'Rezultat': '',
-                            'Corners': '',
-                            'Profit_PLN': '',
-                        })
-
-                # mls_over_corners
-                elif signal_id == 'mls_over_corners':
-                    kurs = float(row.get('odds_corners_over_95') or 0)
-                    if kurs >= 2.00:
-                        signals.append({
-                            'ID': match_id,
-                            'Data': date_str,
-                            'Godzina': kickoff,
-                            'Mecz': mecz,
-                            'Liga': liga_abbr,
-                            'Signal_ID': signal_id,
-                            'Signal_Label': signal_cfg.get('label', ''),
-                            'Tier': signal_cfg.get('tier', 'B'),
-                            'Source': 'rule',
-                            'Typ': signal_cfg.get('typ', ''),
-                            'Kurs': round(kurs, 2),
-                            'Stake_PLN': STAKE,
-                            'Wynik': '',
-                            'Rezultat': '',
-                            'Corners': '',
-                            'Profit_PLN': '',
-                        })
+                # Dodaj sygnał
+                signals.append({
+                    'ID': match_id,
+                    'Data': date_str,
+                    'Godzina': kickoff,
+                    'Mecz': mecz,
+                    'Liga': liga_abbr,
+                    'Signal_ID': signal_id,
+                    'Signal_Label': signal_cfg.get('label', ''),
+                    'Tier': signal_cfg.get('tier', 'B'),
+                    'Source': 'rule',
+                    'Typ': signal_cfg.get('typ', ''),
+                    'Kurs': round(kurs, 2),
+                    'Stake_PLN': STAKE,
+                    'Wynik': '',
+                    'Rezultat': '',
+                    'Corners': '',
+                    'Profit_PLN': '',
+                })
 
         except Exception as e:
             print(f'[WARN] Błąd przetwarzania meczu {match_id}: {e}')
@@ -212,11 +199,16 @@ def generate_scorer_signals(date_str):
             elite_df = pd.read_csv(elite_path, encoding='utf-8-sig')
             elite_subset = elite_df[
                 (elite_df['Model_type'] == 'liga') &
-                (elite_df['Typ'] == 'Under 9.5 corners') &
-                (elite_df['Wynik'] == '')
+                (elite_df['Typ'] == 'Under 9.5 corners')
             ].copy()
             for _, row in elite_subset.iterrows():
                 try:
+                    wynik_val = row.get('Wynik', '')
+                    if pd.isna(wynik_val):
+                        wynik_val = ''
+                    else:
+                        wynik_val = str(wynik_val).strip()
+
                     signals.append({
                         'ID': int(row['ID']),
                         'Data': date_str,
@@ -230,10 +222,10 @@ def generate_scorer_signals(date_str):
                         'Typ': 'Under 9.5 corners',
                         'Kurs': float(row.get('Kurs', 0)),
                         'Stake_PLN': STAKE,
-                        'Wynik': '',
-                        'Rezultat': '',
-                        'Corners': '',
-                        'Profit_PLN': '',
+                        'Wynik': wynik_val,
+                        'Rezultat': str(row.get('Rezultat', '')),
+                        'Corners': row.get('Corners', ''),
+                        'Profit_PLN': row.get('Profit_PLN', ''),
                     })
                 except Exception:
                     continue
@@ -247,11 +239,16 @@ def generate_scorer_signals(date_str):
             allsv_df = pd.read_csv(allsv_path, encoding='utf-8-sig')
             allsv_subset = allsv_df[
                 (allsv_df['Model_type'] == 'gpt_pred') &
-                (allsv_df['Typ'] == 'BTTS Yes') &
-                (allsv_df['Wynik'] == '')
+                (allsv_df['Typ'] == 'BTTS Yes')
             ].copy()
             for _, row in allsv_subset.iterrows():
                 try:
+                    wynik_val = row.get('Wynik', '')
+                    if pd.isna(wynik_val):
+                        wynik_val = ''
+                    else:
+                        wynik_val = str(wynik_val).strip()
+
                     signals.append({
                         'ID': int(row['ID']),
                         'Data': date_str,
@@ -265,10 +262,10 @@ def generate_scorer_signals(date_str):
                         'Typ': 'BTTS Yes',
                         'Kurs': float(row.get('Kurs', 0)),
                         'Stake_PLN': STAKE,
-                        'Wynik': '',
-                        'Rezultat': '',
-                        'Corners': '',
-                        'Profit_PLN': '',
+                        'Wynik': wynik_val,
+                        'Rezultat': str(row.get('Rezultat', '')),
+                        'Corners': row.get('Corners', ''),
+                        'Profit_PLN': row.get('Profit_PLN', ''),
                     })
                 except Exception:
                     continue
@@ -300,33 +297,24 @@ def save_portfolio(all_signals, date_str):
         except Exception as e:
             print(f'[WARN] Błąd wczytania istniejącego portfolio: {e}')
 
-    # Usuń duplikaty (ten sam match_id + Signal_ID)
-    seen = set()
-    unique_signals = []
-    for sig in all_signals:
-        key = (sig['ID'], sig['Signal_ID'])
-        if key not in seen:
-            seen.add(key)
-            unique_signals.append(sig)
-
     # Połącz nowe sygnały z istniejącymi rozliczonymi
-    combined = unique_signals + existing_rows
+    combined = all_signals + existing_rows
+
+    # Konwertuj na DataFrame i usuń duplikaty (ten sam ID + Signal_ID)
+    out_df = pd.DataFrame(combined, columns=csv_cols)
+    out_df = out_df.drop_duplicates(subset=['ID', 'Signal_ID'], keep='first')
 
     # Sortuj: Tier (A przed B), Liga, Godzina
-    combined_sorted = sorted(
-        combined,
-        key=lambda x: (
-            str(x.get('Tier', 'Z')),
-            str(x.get('Liga', '')),
-            str(x.get('Godzina', ''))
-        )
-    )
+    out_df['Tier_sort'] = out_df['Tier'].apply(lambda x: str(x) if pd.notna(x) else 'Z')
+    out_df = out_df.sort_values(
+        by=['Tier_sort', 'Liga', 'Godzina'],
+        na_position='last'
+    ).drop(columns=['Tier_sort']).reset_index(drop=True)
 
     # Zapisz
-    out_df = pd.DataFrame(combined_sorted, columns=csv_cols)
     out_df.to_csv(out_path, index=False, encoding='utf-8-sig')
 
-    return len(unique_signals), out_path
+    return len(out_df), out_path
 
 # ── MAIN (daily) ──────────────────────────────────────────────────────────────
 

@@ -15,9 +15,13 @@ from nordic_config import (
     H2H_CACHE,
     DAILY_DIR,
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
+    MLS_SCORER_DIR, CSL_SCORER_DIR,
     MATCH_DETAILS_DIR,
     CURRENT_DIR,
+    PORTFOLIO_DIR,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
+    MLS_2026_ID, CSL_2026_ID,
+    PORTFOLIO_SIGNALS,
 )
 
 st.set_page_config(
@@ -40,6 +44,8 @@ def get_scorer_files(league: str) -> list:
         "allsvenskan":   ALLSV_SCORER_DIR,
         "eliteserien":   ELITE_SCORER_DIR,
         "veikkausliiga": VEIKK_SCORER_DIR,
+        "mls":           MLS_SCORER_DIR,
+        "csl":           CSL_SCORER_DIR,
     }
     d = dirs.get(league, ALLSV_SCORER_DIR)
     files = glob.glob(os.path.join(d, "*scorer*.csv"))
@@ -52,6 +58,8 @@ def get_all_scorer_files() -> pd.DataFrame:
         ("allsvenskan",   ALLSV_SCORER_DIR),
         ("eliteserien",   ELITE_SCORER_DIR),
         ("veikkausliiga", VEIKK_SCORER_DIR),
+        ("mls",           MLS_SCORER_DIR),
+        ("csl",           CSL_SCORER_DIR),
     ]:
         for f in glob.glob(os.path.join(d, "*scorer*.csv")):
             df = load_csv(f)
@@ -59,6 +67,22 @@ def get_all_scorer_files() -> pd.DataFrame:
                 if "league" not in df.columns:
                     df["league"] = league
                 dfs.append(df)
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def get_portfolio_files() -> list[str]:
+    """Zwraca listę plików portfolio posortowanych od najnowszych."""
+    files = glob.glob(os.path.join(PORTFOLIO_DIR, "portfolio_*.csv"))
+    return sorted(files, reverse=True)
+
+
+def get_all_portfolio_data() -> pd.DataFrame:
+    """Zwraca połączone dane ze wszystkich plików portfolio."""
+    dfs = []
+    for f in get_portfolio_files():
+        df = load_csv(f)
+        if not df.empty:
+            dfs.append(df)
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
@@ -387,6 +411,7 @@ tabs = st.tabs([
     "🏆 Wyniki",
     "🏟 Drużyny",
     "📊 Statystyki",
+    "💼 Portfolio",
     "⚙️ Ustawienia",
 ])
 
@@ -399,7 +424,7 @@ with tabs[0]:
     col1, col2 = st.columns([2, 3])
     league_sel = col1.selectbox(
         "Liga",
-        ["Wszystkie", "Allsvenskan", "Eliteserien", "Veikkausliiga"],
+        ["Wszystkie", "Allsvenskan", "Eliteserien", "Veikkausliiga", "MLS", "CSL"],
         key="mecze_liga",
     )
     day_sel = col2.radio(
@@ -420,6 +445,8 @@ with tabs[0]:
         "Allsvenskan":   ALLSV_SCORER_DIR,
         "Eliteserien":   ELITE_SCORER_DIR,
         "Veikkausliiga": VEIKK_SCORER_DIR,
+        "MLS":           MLS_SCORER_DIR,
+        "CSL":           CSL_SCORER_DIR,
     }
     ligi_do_pokazania = (
         list(liga_map.keys()) if league_sel == "Wszystkie" else [league_sel]
@@ -687,9 +714,16 @@ with tabs[2]:
     col_l, col_f = st.columns([1, 2])
     res_league = col_l.selectbox(
         "Liga",
-        ["allsvenskan", "eliteserien", "veikkausliiga"],
-        format_func=lambda x: x.capitalize(),
+        ["allsvenskan", "eliteserien", "veikkausliiga", "mls", "csl"],
+        format_func=lambda x: {
+            "allsvenskan":   "🇸🇪 Allsvenskan",
+            "eliteserien":   "🇳🇴 Eliteserien",
+            "veikkausliiga": "🇫🇮 Veikkausliiga",
+            "mls":           "🇺🇸 MLS",
+            "csl":           "🇨🇳 CSL",
+        }.get(x, x),
         key="res_league",
+        index=0,  # Domyślnie Allsvenskan
     )
     scorer_files = get_scorer_files(res_league)
 
@@ -1344,6 +1378,15 @@ border-radius:12px;padding:20px;margin-bottom:16px">
 with tabs[4]:
     st.header("📊 Statystyki i ROI")
 
+    # ── Liga Icons ────────────────────────────────
+    liga_icons = {
+        "allsvenskan":   "🇸🇪",
+        "eliteserien":   "🇳🇴",
+        "veikkausliiga": "🇫🇮",
+        "mls":           "🇺🇸",
+        "csl":           "🇨🇳",
+    }
+
     # ── Wczytaj dane ─────────────────────────────
     df_all = get_all_scorer_files()
 
@@ -1428,6 +1471,9 @@ with tabs[4]:
     if liga_col:
         df_liga_stats = calc_stats_table(df_flat, liga_col, stake)
         df_liga_stats = df_liga_stats.rename(columns={liga_col: "Liga"})
+        # Add icons to league names
+        df_liga_stats["Liga"] = df_liga_stats["Liga"].apply(
+            lambda x: f"{liga_icons.get(x, '')} {x}".strip() if isinstance(x, str) else x)
         st.dataframe(df_liga_stats, use_container_width=True, hide_index=True)
     else:
         st.info("Brak kolumny liga.")
@@ -1897,9 +1943,182 @@ with tabs[4]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — USTAWIENIA
+# TAB 6 — PORTFOLIO
 # ═══════════════════════════════════════════════════════════════════════════════
 with tabs[5]:
+    st.header("💼 Portfolio inwestycyjny")
+
+    # ── Selektory daty i filtrów ──────────────────
+    col_p1, col_p2 = st.columns([2, 2])
+
+    port_day = col_p1.radio(
+        "Dzień",
+        ["today", "tomorrow"],
+        format_func=lambda x: "Dziś" if x == "today" else "Jutro",
+        horizontal=True,
+        key="portfolio_day",
+    )
+
+    port_date = (
+        datetime.now().strftime("%Y-%m-%d")
+        if port_day == "today"
+        else (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    )
+
+    port_tiers = col_p2.multiselect(
+        "Tier (puste = wszystkie)",
+        ["A", "B"],
+        default=[],
+        key="portfolio_tiers",
+    )
+
+    # ── Załaduj dane portfolio ────────────────────
+    df_portfolio = get_all_portfolio_data()
+
+    if not df_portfolio.empty:
+        # Filtruj po dacie
+        if "Data" in df_portfolio.columns:
+            df_port_day = df_portfolio[df_portfolio["Data"] == port_date].copy()
+        else:
+            df_port_day = df_portfolio.copy()
+
+        # Filtruj po tierze
+        if port_tiers and "Tier" in df_port_day.columns:
+            df_port_day = df_port_day[df_port_day["Tier"].isin(port_tiers)]
+
+        if not df_port_day.empty:
+            # Wyświetl sygnały
+            st.subheader(f"Sygnały na {port_date}")
+
+            cols_to_show = [
+                c for c in [
+                    "Godzina", "Liga", "Tier", "Signal_Label", "Mecz", "Typ",
+                    "Kurs", "Stake_PLN", "Wynik", "Profit_PLN"
+                ]
+                if c in df_port_day.columns
+            ]
+            st.dataframe(df_port_day[cols_to_show], use_container_width=True, hide_index=True)
+
+            # Metryki
+            m_sygn, m_a, m_b = st.columns(3)
+            m_sygn.metric("Sygnałów", len(df_port_day))
+            if "Tier" in df_port_day.columns:
+                m_a.metric("Tier A", len(df_port_day[df_port_day["Tier"] == "A"]))
+                m_b.metric("Tier B", len(df_port_day[df_port_day["Tier"] == "B"]))
+
+            # ── Dzienne statystyki (tylko dla tego dnia) ──────────────────
+            st.divider()
+            st.subheader("📊 Dzienne statystyki")
+
+            wynik_num_day = pd.to_numeric(df_port_day["Wynik"], errors="coerce")
+            df_day_settled = df_port_day[wynik_num_day.isin([0.0, 1.0])].copy()
+
+            if not df_day_settled.empty:
+                day_stats = calc_roi(df_day_settled)
+
+                col_stats1, col_stats2, col_stats3, col_stats4, col_stats5 = st.columns(5)
+                col_stats1.metric("Zakłady", len(df_day_settled))
+                col_stats2.metric("Win Rate", f"{day_stats['win_rate']:.1%}")
+                col_stats3.metric("Śr. kurs", f"{day_stats['avg_kurs']:.2f}")
+                col_stats4.metric("ROI", f"{day_stats['roi_pct']:+.1f}%")
+                col_stats5.metric("Profit", f"{day_stats['total_profit']:+.1f} PLN")
+            else:
+                st.info(f"Brak rozliczonych zakładów na {port_date}")
+        else:
+            st.info(f"Brak sygnałów na {port_date}")
+    else:
+        st.info("Brak danych portfolio. Wygeneruj sygnały w Ustawieniach.")
+
+    st.divider()
+
+    # ── Sekcja rozliczenia ─────────────────────────
+    st.subheader("📊 Rozliczenie wyników")
+
+    col_settle1, col_settle2 = st.columns([2, 2])
+    settle_date = col_settle1.date_input(
+        "Data do rozliczenia",
+        value=datetime.now().date(),
+        key="settle_date",
+    )
+
+    if col_settle2.button("Pobierz z API i rozlicz", type="primary"):
+        settle_date_str = settle_date.strftime("%Y-%m-%d")
+        portfolio_files = get_portfolio_files()
+
+        matching_files = [f for f in portfolio_files if settle_date_str in f]
+
+        if not matching_files:
+            st.warning(f"❌ Brak pliku portfolio na dzień {settle_date_str}")
+        else:
+            try:
+                from online_settle import settle_portfolio_signals
+
+                with st.spinner(f"Rozliczam wyniki z {settle_date_str}..."):
+                    file_to_settle = matching_files[0]
+                    updated, msg = settle_portfolio_signals(file_to_settle)
+
+                if updated > 0:
+                    st.success(f"✅ {msg} ({file_to_settle})")
+                    st.rerun()
+                else:
+                    st.info(f"ℹ️ {msg}")
+            except ImportError:
+                st.error("❌ Nie można zaimportować modułu online_settle")
+
+    st.divider()
+
+    # ── Statystyki portfolio ──────────────────────
+    st.subheader("📈 Statystyki")
+
+    if not df_portfolio.empty:
+        # Filtruj tylko rozliczone (Wynik = 0 lub 1)
+        wynik_num = pd.to_numeric(df_portfolio["Wynik"], errors="coerce")
+        df_settled_port = df_portfolio[wynik_num.isin([0.0, 1.0])].copy()
+
+        if not df_settled_port.empty:
+            roi_stats = calc_roi(df_settled_port)
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Zakłady", len(df_settled_port))
+            k2.metric("Win Rate", f"{roi_stats['win_rate']:.1%}")
+            k3.metric("ROI", f"{roi_stats['roi_pct']:+.1f}%")
+            k4.metric("Profit", f"{roi_stats['total_profit']:+.1f} PLN")
+
+            st.divider()
+
+            # Per-signal breakdown
+            st.subheader("📋 Rozbór per sygnał")
+
+            if "Signal_ID" in df_settled_port.columns:
+                rows_per_sig = []
+                for sig_id in sorted(df_settled_port["Signal_ID"].dropna().unique()):
+                    df_sig = df_settled_port[df_settled_port["Signal_ID"] == sig_id]
+                    sig_stats = calc_roi(df_sig)
+
+                    tier = df_sig["Tier"].iloc[0] if "Tier" in df_sig.columns else "?"
+                    sig_label = df_sig["Signal_Label"].iloc[0] if "Signal_Label" in df_sig.columns else sig_id
+
+                    rows_per_sig.append({
+                        "Tier": tier,
+                        "Sygnał": sig_label,
+                        "N": sig_stats["n"],
+                        "Win Rate": f"{sig_stats['win_rate']:.1%}",
+                        "Śr. kurs": f"{sig_stats['avg_kurs']:.2f}",
+                        "ROI": f"{sig_stats['roi_pct']:+.1f}%",
+                        "Profit": f"{sig_stats['total_profit']:+.1f}",
+                    })
+
+                if rows_per_sig:
+                    df_sig_stats = pd.DataFrame(rows_per_sig)
+                    st.dataframe(df_sig_stats, use_container_width=True, hide_index=True)
+        else:
+            st.info("Brak rozliczonych zakładów w portfolio.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — USTAWIENIA
+# ═══════════════════════════════════════════════════════════════════════════════
+with tabs[6]:
     st.header("Ustawienia i skrypty")
 
     # ── Dane ─────────────────────────────────────────────────────────────────
@@ -1947,6 +2166,36 @@ with tabs[5]:
 
     st.divider()
 
+    # ── Cache i debugowanie ─────────────────────────────────────────────────
+    st.subheader("🔧 Narzędzia")
+
+    col_t1, col_t2 = st.columns(2)
+
+    with col_t1:
+        if st.button("🗑️ Wyczyść cache"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("✅ Cache wyczyszczony! Przeładuj stronę (F5)")
+
+    with col_t2:
+        if st.button("💼 Otwórz Invest Dashboard"):
+            st.info("""
+            **Opcja 1: Kliknij plik (Windows)**
+            ```
+            Uruchom: run_invest_app.bat
+            ```
+
+            **Opcja 2: Terminal**
+            ```bash
+            streamlit run invest_app.py
+            ```
+
+            Aplikacja otworzy się na: http://localhost:8501
+            """)
+            st.success("✅ Instrukcja wyświetlona powyżej")
+
+    st.divider()
+
     # ── Scorer ────────────────────────────────────────────────────────────────
     st.subheader("⚽ Predykcje")
 
@@ -1964,18 +2213,18 @@ with tabs[5]:
         default=[],
     )
 
-    if st.button("▶ Generuj predykcje", type="primary"):
+    if st.button("▶ Generuj predykcje Nordic", type="primary"):
         args = [day_score, "--debug"]
         if league_score:
             for l in league_score:
                 args += ["--league", l]
-        with st.spinner(f"Generuję predykcje ({day_score})..."):
+        with st.spinner(f"Generuję predykcje Nordic ({day_score})..."):
             rc, out, err = run_script("nordic_scorer.py", args)
         if rc == 0:
-            st.success("Predykcje gotowe!")
+            st.success("Predykcje Nordic gotowe!")
             st.rerun()
         else:
-            st.error("Błąd scorera")
+            st.error("Błąd scorera Nordic")
             st.code(err[-500:])
         with st.expander("Log scorera"):
             important = [
@@ -1983,6 +2232,43 @@ with tabs[5]:
                 if any(k in l for k in ["Łącznie", "Meczów", "Zapisano", "DIAG", "Odrzucone", "══"])
             ]
             st.code("\n".join(important[-50:]))
+
+    # MLS & CSL Scorers
+    col_mls, col_csl = st.columns(2)
+
+    with col_mls:
+        if st.button("🇺🇸 Generuj predykcje MLS", key="btn_mls_scorer"):
+            with st.spinner("Generuję predykcje MLS..."):
+                rc, out, err = run_script("mls_scorer.py", [day_score, "--debug"])
+            if rc == 0:
+                st.success("Predykcje MLS gotowe!")
+                st.rerun()
+            else:
+                st.error("Błąd MLS scorera")
+                st.code(err[-500:])
+            with st.expander("Log MLS"):
+                important = [
+                    l for l in out.split("\n")
+                    if any(k in l for k in ["Łącznie", "Meczów", "Zapisano", "DIAG", "══"])
+                ]
+                st.code("\n".join(important[-30:]))
+
+    with col_csl:
+        if st.button("🇨🇳 Generuj predykcje CSL", key="btn_csl_scorer"):
+            with st.spinner("Generuję predykcje CSL..."):
+                rc, out, err = run_script("csl_scorer.py", [day_score, "--debug"])
+            if rc == 0:
+                st.success("Predykcje CSL gotowe!")
+                st.rerun()
+            else:
+                st.error("Błąd CSL scorera")
+                st.code(err[-500:])
+            with st.expander("Log CSL"):
+                important = [
+                    l for l in out.split("\n")
+                    if any(k in l for k in ["Łącznie", "Meczów", "Zapisano", "DIAG", "══"])
+                ]
+                st.code("\n".join(important[-30:]))
 
     st.divider()
 
@@ -2021,6 +2307,53 @@ with tabs[5]:
                 st.error("Błąd treningu")
             with st.expander("Log"):
                 st.code(out[-3000:])
+
+    st.divider()
+
+    # ── Portfolio Scorer ──────────────────────────────────────────────────────
+    st.subheader("💼 Portfolio")
+
+    col_p1, col_p2 = st.columns(2)
+
+    with col_p1:
+        if st.button("📊 Generuj sygnały dzisiaj", key="btn_portfolio_daily"):
+            port_day = st.session_state.get("portfolio_day", "today")
+            port_date = (
+                datetime.now().strftime("%Y-%m-%d")
+                if port_day == "today"
+                else (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            )
+            with st.spinner(f"Generuję sygnały portfolio na {port_date}..."):
+                rc, out, err = run_script("portfolio_scorer.py", [
+                    "--daily",
+                    "--date", port_date,
+                    "--debug"
+                ])
+            if rc == 0:
+                st.success(f"Sygnały portfolio na {port_date} gotowe!")
+                st.rerun()
+            else:
+                st.error("Błąd portfolio scorera")
+                st.code(err[-500:])
+            with st.expander("Log portfolio"):
+                st.code(out[-1500:])
+
+    with col_p2:
+        if st.button("⏮️  Backfill portfolio (historyczne)", key="btn_portfolio_backfill"):
+            with st.spinner("Backfill portfolio (może potrwać 2-3 min)..."):
+                rc, out, err = run_script("portfolio_scorer.py", ["--backfill", "--debug"])
+            if rc == 0:
+                st.success("Backfill portfolio zakończony!")
+                st.rerun()
+            else:
+                st.error("Błąd backfill")
+                st.code(err[-500:])
+            with st.expander("Log backfill"):
+                important = [
+                    l for l in out.split("\n")
+                    if any(k in l for k in ["Backfill", "Wczytano", "Zapisano", "──"])
+                ]
+                st.code("\n".join(important[-30:]))
 
     st.divider()
 

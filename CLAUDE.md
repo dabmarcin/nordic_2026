@@ -127,6 +127,38 @@ data/telemetry/{league}_scorer/ (daily CSV logs)
   - **Metrics:** Win rate, ROI%, average odds, profit per league
   - **Season filtering:** `--sezon` loads only CSV files matching season IDs (e.g., 2025 loads from historical; 2026 loads from daily)
 
+- **portfolio_scorer.py** — Investment portfolio signal generation:
+  - `python portfolio_scorer.py --daily` — Generate portfolio signals from rule-based and scorer-based sources
+  - `python portfolio_scorer.py --backfill` — Reprocess historical portfolio data
+  - Integrates: Allsvenskan BTTS Yes (gpt_pred model), Eliteserien Under 9.5 Corners (liga model)
+  - Outputs portfolio CSVs to `data/portfolio/portfolio_YYYY-MM-DD.csv`
+  - **CRITICAL:** Validates all rule-based signals against odds ranges defined in `PORTFOLIO_SIGNALS`
+  - Uses `validate_odds(signal_id, kurs)` function to ensure odds match signal criteria
+  - **SOURCE OF TRUTH:** Portfolio CSVs are used by `invest_app.py` for all statistics and performance tracking
+
+- **sync_portfolio_with_scorers.py** — Data sync utility:
+  - `python sync_portfolio_with_scorers.py` — Add missing Nordic signals to existing portfolio CSVs
+  - Scans scorers for Allsvenskan BTTS Yes and Eliteserien Under 9.5C signals
+  - Merges any missing signals into their corresponding portfolio files
+
+- **create_missing_portfolio_files.py** — Portfolio file creation utility:
+  - `python create_missing_portfolio_files.py` — Create portfolio CSVs for dates with scorer data but no portfolio file
+  - Ensures complete coverage of all Nordic signal dates
+
+- **validate_portfolio_odds.py** — Portfolio quality assurance:
+  - `python validate_portfolio_odds.py` — Scan all portfolio files for signals with invalid odds
+  - Validates rule-based signals against `PORTFOLIO_SIGNALS` odds ranges
+  - Automatically removes and reports all violations
+  - **Must run after cleaning or before major analysis**
+
+- **invest_app.py** — Streamlit portfolio investment dashboard:
+  - `streamlit run invest_app.py --logger.level=error`
+  - Port: 8501
+  - **Source of data:** Reads from portfolio CSV files only (not scorers)
+  - KPI cards: ROI, Profit, Zakłady, Win Rate, Zainwestowano
+  - Visualizations: Equity curve with drawdown, per-signal analysis, daily profit chart
+  - Detailed signal table with filtering and CSV export
+
 ## Common Commands
 
 ### Setup
@@ -152,14 +184,26 @@ python train_models.py
 
 # 4. Score predictions
 python nordic_scorer.py --daily
+python mls_scorer.py --daily
+python csl_scorer.py --daily
 
-# 5. Settle results (run after matches finish)
+# 5. Sync portfolio with scorer data (ensures invest_app has all Nordic signals)
+python create_missing_portfolio_files.py
+python sync_portfolio_with_scorers.py
+
+# 6. Generate portfolio investment signals
+python portfolio_scorer.py --daily
+
+# 7. Settle results (run after matches finish)
 python online_settle.py
 
-# 6. View dashboard
+# 8. View dashboard
 streamlit run nordic_app.py
 
-# 7. Backtest strategies on historical and current season data
+# 9. View portfolio dashboard
+streamlit run invest_app.py
+
+# 10. Backtest strategies on historical and current season data (optional)
 python nordic_backtest.py                                    # All data (2022–2026)
 python nordic_backtest.py --liga allsvenskan --stake 50     # Filter by league
 python nordic_backtest.py --sezon 2025                       # Filter by season year (historical)
@@ -201,7 +245,7 @@ Historical team stats aggregated by rolling windows (last 5/10 matches):
 
 ## Key Configuration & Filters
 
-From `nordic_scorer.py`:
+### Nordic Scorer (`nordic_scorer.py`):
 ```python
 FILTERS = {
     'result_home':   {'min_score': 62.0, 'min_odds': 1.40, 'max_odds': 5.0},
@@ -217,6 +261,35 @@ MAX_STAKE = 50.0   # Max per bet (PLN)
 ```
 
 Adjust these in `nordic_scorer.py` to fine-tune stake sizing and filtering.
+
+### Portfolio Signals (`nordic_config.py` → `PORTFOLIO_SIGNALS`):
+**CRITICAL VALIDATION RULES** — All rule-based portfolio signals must respect these odds ranges:
+
+```python
+PORTFOLIO_SIGNALS = {
+    "csl_draw": {              # odds_ft_x must be 3.80-4.50
+        "condition": "odds_ft_x >= 3.80 and odds_ft_x <= 4.50",
+    },
+    "mls_away_win_hi": {       # odds_ft_2 must be 3.80-5.00
+        "condition": "odds_ft_2 >= 3.80 and odds_ft_2 <= 5.00",
+    },
+    "csl_under_corners": {     # odds_corners_under_95 must be >= 2.20
+        "condition": "odds_corners_under_95 >= 2.20",
+    },
+    "mls_over_corners": {      # odds_corners_over_95 must be >= 2.00
+        "condition": "odds_corners_over_95 >= 2.00",
+    },
+    # Scorer-based signals (no odds constraint):
+    "elite_under_corners": {...},      # Eliteserien Under 9.5 Corners
+    "allsv_btts_yes": {...},           # Allsvenskan BTTS Yes
+}
+```
+
+**Portfolio Scorer Validation:** The `portfolio_scorer.py` script automatically validates all rule-based signals:
+- Uses `validate_odds(signal_id, kurs)` function
+- Skips any signal where odds fall outside the defined range
+- Scorer-based signals (elite_under_corners, allsv_btts_yes) have no restrictions
+- **Check this by running:** `python validate_portfolio_odds.py` to find and remove any violating signals
 
 ## Model Features
 
@@ -260,6 +333,30 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 - Dates in CSVs and logs are assumed UTC/game-local
 - Verify match kickoff times match your betting platform
 
+### Portfolio Data Consistency
+- **Portfolio CSV files are the source of truth** for `invest_app.py` performance metrics
+- Nordic signals (Allsvenskan BTTS Yes, Eliteserien Under 9.5 Corners) are generated by scorers but must be synced to portfolio
+- **Sync workflow:**
+  1. `nordic_scorer.py --daily` generates Allsvenskan signals in `data/telemetry/Allsvenskan scorer/`
+  2. `sync_portfolio_with_scorers.py` adds missing signals to existing portfolio CSVs
+  3. `create_missing_portfolio_files.py` creates portfolio CSVs for dates that have scorer data but no portfolio file
+  4. `portfolio_scorer.py --daily` generates additional rule-based and other signals
+- **Verification:** Run this to check consistency:
+  ```bash
+  python << 'EOF'
+  import pandas as pd, glob, os
+  scorer_ids = [int(id) for f in glob.glob(r"data/telemetry/Allsvenskan scorer/*.csv") 
+                for id in pd.read_csv(f, encoding='utf-8-sig')
+                [(pd.read_csv(f, encoding='utf-8-sig')['Model_type']=='gpt_pred') & 
+                 (pd.read_csv(f, encoding='utf-8-sig')['Typ']=='BTTS Yes')]['ID']]
+  portfolio_ids = [int(id) for f in glob.glob(r"data/portfolio/*.csv") 
+                   for id in pd.read_csv(f, encoding='utf-8-sig')
+                   [(pd.read_csv(f, encoding='utf-8-sig')['Liga']=='Allsvenskan') & 
+                    (pd.read_csv(f, encoding='utf-8-sig')['Signal_ID']=='allsv_btts_yes')]['ID']]
+  print(f"Match: {set(scorer_ids)==set(portfolio_ids)}")
+  EOF
+  ```
+
 ## Directory Structure Summary
 ```
 nordic_2026/
@@ -269,14 +366,21 @@ nordic_2026/
 ├── build_dataset.py          # Feature engineering
 ├── train_models.py           # Model training
 ├── nordic_scorer.py          # Prediction & scoring
-├── nordic_app.py             # Streamlit dashboard
+├── mls_scorer.py             # MLS predictions
+├── csl_scorer.py             # CSL predictions
+├── nordic_app.py             # Betting dashboard (Streamlit)
+├── invest_app.py             # Portfolio investment dashboard (Streamlit)
+├── portfolio_scorer.py       # Portfolio signal generation
 ├── online_settle.py          # Bet settlement
+├── sync_portfolio_with_scorers.py  # Sync Nordic signals to portfolio
+├── create_missing_portfolio_files.py  # Create missing portfolio CSVs
 ├── process_existing_predictions.py  # Batch reprocessing
 ├── nordic_backtest.py        # Backtest strategies on 2022–2026 data
 ├── data/
 │   ├── daily/                # Current season matches (2026)
 │   ├── historical/           # 2022–2025 data by league
-│   ├── telemetry/            # Scorer CSV logs
+│   ├── telemetry/            # Scorer CSV logs by league
+│   ├── portfolio/            # Portfolio CSV files (invest_app source of truth)
 │   ├── current/              # Feature-engineered datasets
 │   ├── h2h_cache/            # Cached head-to-head data
 │   ├── articles/             # Web-scraped articles (future)
@@ -287,6 +391,8 @@ nordic_2026/
     ├── allsvenskan/          # Models for Sweden
     ├── eliteserien/          # Models for Norway
     ├── veikkausliiga/        # Models for Finland
+    ├── mls/                  # Models for USA
+    ├── csl/                  # Models for China
     └── nordic_combined/      # Cross-league models (if used)
 ```
 

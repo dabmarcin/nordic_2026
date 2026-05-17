@@ -5,6 +5,7 @@ import glob
 import json
 import argparse
 import datetime
+from datetime import timezone
 
 import numpy as np
 import pandas as pd
@@ -531,10 +532,15 @@ def find_daily_file(day_arg):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('day', choices=['today', 'tomorrow'])
+    parser.add_argument('day', nargs='?', choices=['today', 'tomorrow'], default='today')
     parser.add_argument('--debug',  action='store_true')
     parser.add_argument('--league', choices=list(ACTIVE_LEAGUES.keys()), default=None, nargs='+')
+    parser.add_argument('--backfill', action='store_true', help='Backfill mode: process complete matches')
     args = parser.parse_args()
+
+    if args.backfill:
+        main_backfill()
+        return
 
     for d in [MLS_SCORER_DIR, REPORTS_DIR]:
         os.makedirs(d, exist_ok=True)
@@ -850,6 +856,250 @@ def main():
         with open(debug_path, 'w', encoding='utf-8') as f:
             json.dump(debug, f, ensure_ascii=False, indent=2, default=str)
         print(f'  Debug: {debug_path}')
+
+
+# ── BACKFILL FUNCTION ─────────────────────────────────────────────────────────
+
+def main_backfill():
+    """Backfill mode: process all complete MLS matches from mls_matches_2026.csv"""
+    os.makedirs(MLS_SCORER_DIR, exist_ok=True)
+
+    # Wczytaj matches
+    matches_path = os.path.join(CURRENT_DIR, 'mls_matches_2026.csv')
+    if not os.path.exists(matches_path):
+        print(f'Brak pliku {matches_path}')
+        sys.exit(1)
+
+    try:
+        all_matches_df = pd.read_csv(matches_path, encoding='utf-8-sig')
+    except Exception as e:
+        print(f'Błąd wczytania matches: {e}')
+        sys.exit(1)
+
+    # Filtruj complete
+    complete_df = all_matches_df[all_matches_df['status'] == 'complete'].copy()
+    print('══════════════════════════════════════════════════════')
+    print('BACKFILL — MLS SCORER')
+    print('══════════════════════════════════════════════════════')
+    print(f'Meczów complete w 2026: {len(complete_df)}')
+
+    if complete_df.empty:
+        print('Brak complete meczów.')
+        sys.exit(0)
+
+    # Wczytaj modele
+    league_models = {}
+    for lg in ACTIVE_LEAGUES:
+        _, models_dir, _ = LEAGUE_DIRS[lg]
+        league_models[lg] = load_models(models_dir)
+
+    # Wczytaj historię
+    league_history = {}
+    for lg, (hist_dir, _, _) in LEAGUE_DIRS.items():
+        hist_df = load_historical(hist_dir)
+        league_history[lg] = build_team_history(hist_df)
+
+    # Wczytaj teams
+    teams_lookup = load_current_teams_lookup()
+
+    # Pogrupuj po dacie
+    complete_df['date_str'] = complete_df['date_unix'].apply(
+        lambda x: datetime.datetime.fromtimestamp(
+            int(x), tz=datetime.timezone.utc
+        ).strftime('%Y-%m-%d')
+    )
+
+    date_groups = complete_df.groupby('date_str', sort=True)
+    dates = sorted(date_groups.groups.keys())
+    print(f'Dat do przetworzenia:   {len(dates)}')
+
+    # Sprawdzenie cache
+    cached_files = glob.glob(os.path.join(MLS_SCORER_DIR, 'mls_scorer_*.csv'))
+    cached_dates = set(
+        os.path.basename(f).replace('mls_scorer_', '').replace('.csv', '')
+        for f in cached_files
+    )
+    print(f'Pliki już w cache:       {len(cached_dates)} (pominiętych)')
+
+    to_process = [d for d in dates if d not in cached_dates]
+    print(f'Pliki do wygenerowania: {len(to_process)}')
+    print('──────────────────────────────────────────────────────')
+
+    id_to_league = {v: k for k, v in ACTIVE_LEAGUES.items()}
+    all_predictions = []
+    processed_count = 0
+
+    for date_str in to_process:
+        date_matches = date_groups.get_group(date_str).copy()
+
+        all_tips = []
+        rejected = []
+
+        for _, row in date_matches.iterrows():
+            match_id = int(row['id'])
+            home_id = int(row['homeID'])
+            away_id = int(row['awayID'])
+            home_name = str(row.get('home_name', home_id))
+            away_name = str(row.get('away_name', away_id))
+            comp_id = int(row['competition_id'])
+            league = id_to_league.get(comp_id, 'mls')
+            cutoff = float(row['date_unix'])
+            match_label = f'{home_name} vs {away_name}'
+
+            # Godzina
+            try:
+                import pytz
+                tz = pytz.timezone(TZ)
+                ko_dt = datetime.datetime.fromtimestamp(cutoff, tz=tz)
+                kickoff_str = ko_dt.strftime('%H:%M')
+            except Exception:
+                kickoff_str = '--:--'
+
+            # Last-5
+            team_hist = league_history.get(league, {})
+            h_stats = compute_last5_stats(home_id, cutoff, team_hist)
+            a_stats = compute_last5_stats(away_id, cutoff, team_hist)
+
+            def fallback_last5(imputer_dict, prefix):
+                iv = {}
+                for mn in MODEL_NAMES:
+                    imp = imputer_dict.get(mn, {})
+                    iv.update(imp.get('imputation_values', {}))
+                return {
+                    'btts_rate':      iv.get(f'{prefix}last5_btts_rate', 0.5),
+                    'over25_rate':    iv.get(f'{prefix}last5_over25_rate', 0.5),
+                    'corners_avg':    iv.get(f'{prefix}last5_corners_avg', 9.5),
+                    'goals_scored':   iv.get(f'{prefix}last5_goals_scored', 1.2),
+                    'goals_conceded': iv.get(f'{prefix}last5_goals_conceded', 1.2),
+                    'win_rate':       iv.get(f'{prefix}last5_win_rate', 0.4),
+                    'cards_avg':      iv.get(f'{prefix}last5_cards_avg', 2.0),
+                }
+
+            lg_models_dict, lg_imputors_dict = league_models[league]
+
+            if h_stats is None:
+                h_stats = fallback_last5(lg_imputors_dict, 'home_')
+            if a_stats is None:
+                a_stats = fallback_last5(lg_imputors_dict, 'away_')
+
+            h2h = dict(H2H_FALLBACK)
+
+            try:
+                features = build_features(row, league, h_stats, a_stats, h2h)
+            except Exception:
+                continue
+
+            h_ts = get_team_stats_from_lookup(home_id, 'home', teams_lookup)
+            a_ts = get_team_stats_from_lookup(away_id, 'away', teams_lookup)
+            features.update(h_ts)
+            features.update(a_ts)
+            h_ppg = h_ts.get('home_team_ppg_home', np.nan)
+            a_ppg = a_ts.get('away_team_ppg_away', np.nan)
+            h_sc = h_ts.get('home_team_scored_avg_home', np.nan)
+            a_sc = a_ts.get('away_team_scored_avg_away', np.nan)
+            h_co = h_ts.get('home_team_corners_avg_home', np.nan)
+            a_co = a_ts.get('away_team_corners_avg_away', np.nan)
+            features['diff_team_ppg']     = h_ppg - a_ppg if not (np.isnan(h_ppg) or np.isnan(a_ppg)) else np.nan
+            features['diff_team_scored']  = h_sc  - a_sc  if not (np.isnan(h_sc)  or np.isnan(a_sc))  else np.nan
+            features['diff_team_corners'] = h_co  - a_co  if not (np.isnan(h_co)  or np.isnan(a_co))  else np.nan
+
+            # Predykcje
+            for model_type, (models_dict, imputors_dict) in [
+                ('liga', (lg_models_dict, lg_imputors_dict)),
+            ]:
+                for mn in MODEL_NAMES:
+                    if mn not in models_dict:
+                        continue
+                    try:
+                        preds = predict_model(mn, models_dict[mn], imputors_dict[mn],
+                                              features, row, rejected, match_label)
+                    except Exception:
+                        continue
+
+                    for pred in preds:
+                        all_tips.append({
+                            'match_id':     match_id,
+                            'league':       league,
+                            'home':         home_name,
+                            'away':         away_name,
+                            'kickoff':      kickoff_str,
+                            'model':        mn,
+                            'model_type':   model_type,
+                            'typ':          normalize_typ(pred['typ'], home=home_name, away=away_name),
+                            'score':        pred['score'],
+                            'p':            pred['p'],
+                            'odds':         pred['odds'],
+                            'ev':           pred['ev'],
+                            'stake':        pred['stake'],
+                            'features':     pred['features'],
+                            'home_goals':   int(row.get('homeGoalCount', 0)),
+                            'away_goals':   int(row.get('awayGoalCount', 0)),
+                            'corners':      int(row.get('totalCornerCount', 0)),
+                            'yellow_cards': int(row.get('team_a_yellow_cards', 0)) + int(row.get('team_b_yellow_cards', 0)),
+                        })
+
+        # Buduj CSV rows z Wynik
+        rows = []
+        for t in all_tips:
+            if t['model_type'] != 'liga':
+                continue
+
+            wynik = None
+            if t['model'] == 'result_home':
+                wynik = 1 if t['home_goals'] > t['away_goals'] else 0
+            elif t['model'] == 'result_away':
+                wynik = 1 if t['away_goals'] > t['home_goals'] else 0
+            elif t['model'] == 'btts':
+                wynik = 1 if t['home_goals'] > 0 and t['away_goals'] > 0 else 0
+            elif t['model'] == 'over25':
+                wynik = 1 if (t['home_goals'] + t['away_goals']) > 2.5 else 0
+            elif t['model'] == 'corners':
+                wynik = 1 if t['corners'] <= 9.5 else 0
+
+            profit = 0.0
+            if wynik is not None:
+                profit = t['stake'] * (t['odds'] - 1) if wynik == 1 else -t['stake']
+
+            rows.append({
+                'ID':            t['match_id'],
+                'Data':          date_str,
+                'Godzina':       t['kickoff'],
+                'Mecz':          f"{t['home']} vs {t['away']}",
+                'Liga':          t['league'],
+                'Model':         t['model'],
+                'Model_type':    t['model_type'],
+                'Typ':           t['typ'],
+                'Score[%]':      t['score'],
+                'P_model':       t['p'],
+                'Kurs':          t['odds'],
+                'EV[%]':         t['ev'],
+                'Stake_PLN':     t['stake'],
+                'Wynik':         wynik,
+                'Rezultat':      f"{t['home_goals']}:{t['away_goals']}",
+                'Corners':       t['corners'],
+                'Kartki':        t['yellow_cards'],
+                'Profit_PLN':    round(profit, 2),
+            })
+
+        rows = merge_duplicate_predictions(rows)
+
+        if rows:
+            out_df = pd.DataFrame(rows, columns=['ID', 'Data', 'Godzina', 'Mecz', 'Liga', 'Model', 'Model_type',
+                                                 'Typ', 'Score[%]', 'P_model', 'Kurs', 'EV[%]',
+                                                 'Stake_PLN', 'Wynik', 'Rezultat', 'Corners', 'Kartki', 'Profit_PLN'])
+            out_path = os.path.join(MLS_SCORER_DIR, f'mls_scorer_{date_str}.csv')
+            out_df.to_csv(out_path, index=False, encoding='utf-8-sig')
+            processed_count += 1
+            all_predictions.extend(rows)
+            settled_count = len([r for r in rows if r['Wynik'] is not None and r['Wynik'] in [0, 1]])
+            print(f'✅ {date_str} — {len(rows)} predykcji ({len(date_matches)} meczów)')
+
+    print('──────────────────────────────────────────────────────')
+    settled = len([p for p in all_predictions if p['Wynik'] is not None and p['Wynik'] in [0, 1]])
+    print(f'Łącznie wygenerowano:  {len(all_predictions)} predykcji')
+    print(f'Rozliczonych:          {settled} ({100*settled/len(all_predictions) if all_predictions else 0:.0f}%)')
+    print(f'Plików zapisanych:     {processed_count}')
+    print('══════════════════════════════════════════════════════')
 
 
 if __name__ == '__main__':
