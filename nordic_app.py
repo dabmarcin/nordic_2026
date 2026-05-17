@@ -2325,8 +2325,7 @@ with tabs[6]:
             )
             with st.spinner(f"Generuję sygnały portfolio na {port_date}..."):
                 rc, out, err = run_script("portfolio_scorer.py", [
-                    "--daily",
-                    "--date", port_date,
+                    port_day,
                     "--debug"
                 ])
             if rc == 0:
