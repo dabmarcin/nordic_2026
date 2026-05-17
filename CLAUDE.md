@@ -76,9 +76,21 @@ data/telemetry/{league}_scorer/ (daily CSV logs)
 
 - **nordic_app.py** — Streamlit dashboard:
   - `streamlit run nordic_app.py`
-  - Loads scorer files, displays by league and date
+  - 6 tabs: Mecze (Matches), Artykuły (Articles), Wyniki (Results), Drużyny (Teams), Statystyki (Statistics), Ustawienia (Settings)
+  - **Statistics tab:**
+    - Overall KPI summary: Zakłady, Wygrane, Win Rate, ROI, Profit
+    - Per-league breakdown with charts
+    - ML vs GPT model comparison
+    - Per-bet-type analysis
+    - Per-league-per-type matrix with ROI/Profit charts
+    - Odds bracket analysis (1.01–1.30, 1.31–1.50, etc.)
+    - GPT accuracy per bet type
+    - Match result distribution (goals, BTTS, corners)
+    - Equity curve with drawdown tracking
+    - **All Bets filter section:** Liga/Model/Typ multiselects with filtered summary KPI above data table (Zakłady, Wygrane, Win Rate, Śr. kurs, ROI, Profit)
   - Charts: performance over time, prediction accuracy
   - H2H history lookup for team matchups
+  - JSON export of all statistics to `data/reports/`
 
 - **online_settle.py** — Bet settlement:
   - Maps league abbreviations → season IDs
@@ -106,7 +118,7 @@ data/telemetry/{league}_scorer/ (daily CSV logs)
     - S9: BTTS Yes — odds_btts_yes
     - S10: BTTS No — odds_btts_no
   - **Outputs:** Console table + JSON report to `data/reports/backtest_YYYY-MM-DD.json`
-  - **Per-league breakdown:** S1 (1), S2 (2), S3 (X2) only
+  - **Per-league breakdown:** All 10 strategies (S1–S10) shown with Liga, N, WR, Śr.Kurs, ROI, Profit per league
   - **Metrics:** Win rate, ROI%, average odds, profit per league
   - **Season filtering:** `--sezon` loads only CSV files matching season IDs (e.g., 2025 loads from historical; 2026 loads from daily)
 

@@ -1792,6 +1792,28 @@ with tabs[4]:
     if filter_typ and "Typ_norm" in df_table.columns:
         df_table = df_table[df_table["Typ_norm"].isin(filter_typ)]
 
+    # ── PODSUMOWANIE DLA WYFILTROWANYCH ZAKŁADÓW ──
+    if not df_table.empty:
+        wynik_table  = pd.to_numeric(df_table["Wynik"],      errors="coerce")
+        kurs_table   = pd.to_numeric(df_table["Kurs"],       errors="coerce")
+        profit_table = pd.to_numeric(df_table["Profit_PLN"], errors="coerce")
+        n_table      = len(df_table)
+        n_won_table  = int(wynik_table.fillna(0).sum())
+        wr_table     = n_won_table / n_table if n_table else 0
+        tot_stake_table  = n_table * stake
+        tot_profit_table = profit_table.fillna(0).sum()
+        roi_table    = (tot_profit_table / tot_stake_table * 100) if tot_stake_table else 0
+        avg_kurs_table = kurs_table.mean() if not kurs_table.empty else 0
+
+        st.subheader("📊 Podsumowanie")
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        k1.metric("Zakłady",  n_table)
+        k2.metric("Wygrane",  n_won_table)
+        k3.metric("Win Rate", f"{wr_table:.1%}")
+        k4.metric("Śr. kurs", f"{avg_kurs_table:.2f}")
+        k5.metric("ROI",      f"{roi_table:+.1f}%")
+        k6.metric("Profit",   f"{tot_profit_table:+.1f} PLN")
+
     cols_table = [c for c in [
         "Data", "Godzina", "Mecz",
         liga_col if liga_col else "Liga",

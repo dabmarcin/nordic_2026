@@ -419,8 +419,8 @@ def print_results(all_results: Dict, by_league: Dict[str, Dict], odds_analysis: 
         ]
         print("  " + format_table_row(row, widths))
 
-    # ── PER-LEAGUE RESULTS (S1, S2, S3 ONLY) ───────────────────────────────────
-    for strategy_key in ['S1', 'S2', 'S3']:
+    # ── PER-LEAGUE RESULTS (ALL STRATEGIES) ────────────────────────────────────
+    for strategy_key in ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10']:
         strategy = STRATEGIES[strategy_key]
         league_results = by_league[strategy_key]
 
