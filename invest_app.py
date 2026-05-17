@@ -7,7 +7,10 @@ Displays portfolio performance analytics with equity curves, per-signal analysis
 
 import sys
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+except (AttributeError, ValueError):
+    pass
 
 import streamlit as st
 import pandas as pd
@@ -320,7 +323,8 @@ if df_portfolio.empty:
 st.sidebar.markdown("### 🎯 Filtry")
 
 # Bankroll and stake info
-bankroll = st.sidebar.number_input("💰 Bankroll (PLN)", value=1000.0, min_value=100.0)
+bankroll = st.sidebar.number_input("💰 Bankroll (PLN)", value=1000.0, min_value=10.0)
+user_stake = st.sidebar.number_input("💵 Stawka na zakład (PLN)", value=100.0, min_value=1.0, step=10.0)
 avg_stake = df_portfolio['Stake_PLN'].mean()
 
 # Tier filter
@@ -340,13 +344,29 @@ signal_filter = st.sidebar.multiselect(
     key='signal_filter'
 )
 
+# Date filter by months
+available_months = sorted(df_portfolio['Data'].dt.strftime('%Y-%m').unique())
+month_filter = st.sidebar.multiselect(
+    "📅 Miesiące",
+    options=available_months,
+    default=available_months,
+    key='month_filter'
+)
+
 # Apply filters
 df_filtered = df_portfolio[
     (df_portfolio['Tier'].isin(tier_filter)) &
-    (df_portfolio['Signal_ID'].isin(signal_filter))
+    (df_portfolio['Signal_ID'].isin(signal_filter)) &
+    (df_portfolio['Data'].dt.strftime('%Y-%m').isin(month_filter))
 ].copy()
 
 df_settled = df_filtered[df_filtered['Wynik'].isin([0.0, 1.0])].copy()
+
+# Apply stake multiplier to adjust all profits dynamically
+multiplier = user_stake / 100.0
+if not df_settled.empty:
+    df_settled['Profit_PLN'] = df_settled['Profit_PLN'] * multiplier
+    df_settled['Stake_PLN'] = df_settled['Stake_PLN'] * multiplier
 
 # Main dashboard
 st.title("💼 Portfolio Investment Dashboard")
