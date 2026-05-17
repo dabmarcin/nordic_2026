@@ -19,24 +19,32 @@ from nordic_config import (
     API_KEY, BASE_URL,
     ALL_HISTORICAL, LEAGUE_BY_SEASON_ID,
     ALLSVENSKAN_DIR, ELITESERIEN_DIR, VEIKKAUSLIIGA_DIR,
+    MLS_DIR, CSL_DIR,
     ALLSVENSKAN_HISTORICAL, ELITESERIEN_HISTORICAL, VEIKKAUSLIIGA_HISTORICAL,
+    MLS_HISTORICAL, CSL_HISTORICAL,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
+    MLS_2026_ID, CSL_2026_ID,
     ACTIVE_SEASON_IDS, LEAGUE_BY_SEASON_ID,
     DAILY_DIR, REPORTS_DIR,
     CURRENT_DIR,
     TEAMS_ALLSV_HIST, TEAMS_ELITE_HIST, TEAMS_VEIKK_HIST,
+    TEAMS_MLS_HIST, TEAMS_CSL_HIST,
 )
 
 LEAGUE_DIR_MAP = {
     "allsvenskan":   ALLSVENSKAN_DIR,
     "eliteserien":   ELITESERIEN_DIR,
     "veikkausliiga": VEIKKAUSLIIGA_DIR,
+    "mls":           MLS_DIR,
+    "csl":           CSL_DIR,
 }
 
 TEAMS_HIST_DIR_MAP = {
     "allsvenskan":   TEAMS_ALLSV_HIST,
     "eliteserien":   TEAMS_ELITE_HIST,
     "veikkausliiga": TEAMS_VEIKK_HIST,
+    "mls":           TEAMS_MLS_HIST,
+    "csl":           TEAMS_CSL_HIST,
 }
 
 # season_id → liga
@@ -44,6 +52,8 @@ ACTIVE_LEAGUE_NAMES = {
     ALLSVENSKAN_2026_ID:   "allsvenskan",
     ELITESERIEN_2026_ID:   "eliteserien",
     VEIKKAUSLIIGA_2026_ID: "veikkausliiga",
+    MLS_2026_ID:           "mls",
+    CSL_2026_ID:           "csl",
 }
 
 TEAMS_STATS_KEYS = [
@@ -184,6 +194,10 @@ def run_historical(force: bool = False):
                           "teams_seasons": 0, "teams_skipped": 0},
         "veikkausliiga": {"seasons": 0, "matches": 0, "skipped": 0, "errors": 0,
                           "teams_seasons": 0, "teams_skipped": 0},
+        "mls":           {"seasons": 0, "matches": 0, "skipped": 0, "errors": 0,
+                          "teams_seasons": 0, "teams_skipped": 0},
+        "csl":           {"seasons": 0, "matches": 0, "skipped": 0, "errors": 0,
+                          "teams_seasons": 0, "teams_skipped": 0},
     }
     total_skipped = 0
     total_errors = 0
@@ -254,11 +268,13 @@ def run_historical(force: bool = False):
     print(f"  Allsvenskan:   {stats['allsvenskan']['seasons']} sezony │ {stats['allsvenskan']['matches']} meczów")
     print(f"  Eliteserien:   {stats['eliteserien']['seasons']} sezony │ {stats['eliteserien']['matches']} meczów")
     print(f"  Veikkausliiga: {stats['veikkausliiga']['seasons']} sezony │ {stats['veikkausliiga']['matches']} meczów")
+    print(f"  MLS:           {stats['mls']['seasons']} sezony │ {stats['mls']['matches']} meczów")
+    print(f"  CSL:           {stats['csl']['seasons']} sezony │ {stats['csl']['matches']} meczów")
     print("──────────────────────────────────────────")
-    print(f"  Łącznie:      {total_seasons} sezonów │ {total_matches} meczów")
+    print(f"  Łącznie:       {total_seasons} sezonów │ {total_matches} meczów")
     print(f"  Teams pobrane: {total_teams_seasons} sezonów")
-    print(f"  Pominięto:    {total_skipped} (już w cache)")
-    print(f"  Błędy:        {total_errors}")
+    print(f"  Pominięto:     {total_skipped} (już w cache)")
+    print(f"  Błędy:         {total_errors}")
     print("══════════════════════════════════════════")
 
 
@@ -364,6 +380,8 @@ def run_daily():
         (ALLSVENSKAN_2026_ID,   "allsvenskan_teams_2026.csv",   "allsvenskan_matches_2026.csv"),
         (ELITESERIEN_2026_ID,   "eliteserien_teams_2026.csv",   "eliteserien_matches_2026.csv"),
         (VEIKKAUSLIIGA_2026_ID, "veikkausliiga_teams_2026.csv", "veikkausliiga_matches_2026.csv"),
+        (MLS_2026_ID,           "mls_teams_2026.csv",           "mls_matches_2026.csv"),
+        (CSL_2026_ID,           "csl_teams_2026.csv",           "csl_matches_2026.csv"),
     ]:
         league = ACTIVE_LEAGUE_NAMES[sid]
 
@@ -434,6 +452,12 @@ def run_weekly():
         (VEIKKAUSLIIGA_2026_ID,
          "veikkausliiga_matches_2026.csv",
          "veikkausliiga_teams_2026.csv"),
+        (MLS_2026_ID,
+         "mls_matches_2026.csv",
+         "mls_teams_2026.csv"),
+        (CSL_2026_ID,
+         "csl_matches_2026.csv",
+         "csl_teams_2026.csv"),
     ]:
         league = ACTIVE_LEAGUE_NAMES[sid]
         print(f"\n  {league.capitalize()} 2026...")

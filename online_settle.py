@@ -47,6 +47,15 @@ def _build_league_to_season_map() -> Dict[str, int]:
         for key in ("veikkausliiga", "veikk", "Finland Veikkausliiga", "Finland Veikkausliiga 2026"):
             m[key] = sid
 
+    if hasattr(_nc, "MLS_2026_ID"):
+        sid = int(_nc.MLS_2026_ID)
+        for key in ("mls", "MLS", "USA MLS", "USA MLS 2026", "MLS 2026"):
+            m[key] = sid
+    if hasattr(_nc, "CSL_2026_ID"):
+        sid = int(_nc.CSL_2026_ID)
+        for key in ("csl", "CSL", "China Super League", "China Super League 2026", "CSL 2026"):
+            m[key] = sid
+
     return m
 
 
@@ -73,6 +82,14 @@ def _get_season_id_for_league(league_name: str) -> Optional[int]:
         return int(_nc.ALLSVENSKAN_2026_ID)
     if _nc and hasattr(_nc, "ELITESERIEN_2026_ID") and ("elite" in league_lower or "eliteserien" in league_lower):
         return int(_nc.ELITESERIEN_2026_ID)
+
+    if _nc and hasattr(_nc, "MLS_2026_ID") and \
+       ("mls" in league_lower or "major league soccer" in league_lower):
+        return int(_nc.MLS_2026_ID)
+
+    if _nc and hasattr(_nc, "CSL_2026_ID") and \
+       ("csl" in league_lower or "chinese super" in league_lower or "china super" in league_lower):
+        return int(_nc.CSL_2026_ID)
 
     return None
 
