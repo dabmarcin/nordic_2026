@@ -37,13 +37,17 @@ FILTERS = {
     'result_away':   {'min_score': 62.0, 'min_odds': 1.40, 'max_odds': 5.0},
     'btts':          {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
     'over25':        {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
-    'under25':       {'min_score': 62.0, 'min_odds': 1.20, 'max_odds': 5.0},
-    'corners_under': {'min_score': 60.0, 'min_odds': 1.30, 'max_odds': 5.0},
+    'over25_forced': {'min_score': 0.0, 'min_odds': 1.30, 'max_odds': 1.80},
+    'corners_over':  {'min_score': 0.0, 'min_odds': 1.45, 'max_odds': 2.20},
 }
 
 BANKROLL   = 1000.0
 KELLY_FRAC = 0.25
 MAX_STAKE  = 50.0
+
+# Empirical win rates for contrarian models (CSL)
+P_CORNERS_OVER_CSL = 0.63
+P_OVER25_FORCED_CSL = 0.66
 
 MODEL_NAMES = ['result_home', 'result_away', 'btts', 'over25', 'corners']
 
@@ -415,12 +419,15 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
     results = []
 
     if model_name == 'corners':
-        odds_v = features_dict.get('odds_corners_under_95', 0.0)
-        flt = FILTERS['corners_under']
+        # Always play Over 9.5 corners for CSL
+        # Model corners is contrarian indicator (low score = model says Under = we play Over)
+        odds_v = features_dict.get('odds_corners_over_95', 0.0)
+        score_over = 100.0 - score  # Invert score
+        flt = FILTERS['corners_over']
         reasons = []
-        if score < flt['min_score']:
+        if score_over < flt['min_score']:
             reasons.append({'filter': 'MIN_SCORE', 'threshold': flt['min_score'],
-                             'value': round(score, 2), 'passed': False})
+                             'value': round(score_over, 2), 'passed': False})
         if odds_v < flt['min_odds']:
             reasons.append({'filter': 'MIN_ODDS', 'threshold': flt['min_odds'],
                              'value': round(odds_v, 2), 'passed': False})
@@ -428,19 +435,28 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
             reasons.append({'filter': 'MAX_ODDS', 'threshold': flt['max_odds'],
                              'value': round(odds_v, 2), 'passed': False})
         if reasons:
-            rejected.append({'match': match_label, 'model': 'corners_under',
-                              'score_pct': round(score, 1),
+            rejected.append({'match': match_label, 'model': 'corners_over',
+                              'score_pct': round(score_over, 1),
                               'odds': round(odds_v, 2),
                               'rejection_reasons': reasons})
         else:
-            ev = (p * odds_v - 1.0) * 100.0
-            stake = kelly_stake(p, odds_v)
+            # Use empirical probability for corners_over (contrarian model)
+            p_over = P_CORNERS_OVER_CSL
+            ev = (p_over * odds_v - 1.0) * 100.0
+
+            # Kelly calculation for corners_over
+            if odds_v <= 1.0:
+                stake = 0.0
+            else:
+                kelly_raw = (p_over * odds_v - 1.0) / (odds_v - 1.0)
+                stake = min(max(BANKROLL * kelly_raw * KELLY_FRAC, 0), MAX_STAKE)
+
             results.append({
                 'model_name': model_name,
-                'direction':  'corners_under',
-                'typ':        'Under 9.5 corners',
-                'score':      round(score, 1),
-                'p':          round(p, 4),
+                'direction':  'corners_over',
+                'typ':        'Over 9.5 corners',
+                'score':      round(score_over, 1),
+                'p':          round(p_over, 4),
                 'odds':       round(odds_v, 2),
                 'ev':         round(ev, 1),
                 'stake':      round(stake, 1),
@@ -462,19 +478,21 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
         'over25':      'Over 2.5',
     }
 
-    # Special handling for over25 — if score < 50%, generate under25 instead
+    # Special handling for over25 — if score < 50%, generate Over 2.5 with empirical p
     if model_name == 'over25' and score < 50.0:
-        score = 100.0 - score  # przelicz na pewność Under
-        p = score / 100.0      # zaktualizuj p dla Kelly
-        odds_key = 'odds_ft_under25'
-        direction = 'under25'
-        typ = 'Under 2.5'
-        flt = FILTERS['under25']
+        # Instead of Under 2.5, generate Over 2.5 with empirical probability
+        odds_key = 'odds_ft_over25'
+        direction = 'over25_forced'
+        typ = 'Over 2.5'
+        flt = FILTERS['over25_forced']
+        p = P_OVER25_FORCED_CSL  # Use empirical probability
     else:
         odds_key = odds_map[model_name]
         direction = model_name
         typ = typ_map[model_name]
         flt = FILTERS[model_name]
+        # For normal over25 (score >= 50%), use model score as probability
+        p = score / 100.0
 
     odds_v   = features_dict.get(odds_key, 0.0)
     reasons = []
@@ -494,8 +512,13 @@ def predict_model(model_name, model, imputer, features_dict, row, rejected, matc
                           'rejection_reasons': reasons})
         return []
 
-    ev    = (p * odds_v - 1.0) * 100.0
-    stake = kelly_stake(p, odds_v)
+    # Calculate EV and Kelly stake
+    ev = (p * odds_v - 1.0) * 100.0
+    if odds_v <= 1.0:
+        stake = 0.0
+    else:
+        kelly_raw = (p * odds_v - 1.0) / (odds_v - 1.0)
+        stake = min(max(BANKROLL * kelly_raw * KELLY_FRAC, 0), MAX_STAKE)
     return [{
         'model_name': model_name,
         'direction':  direction,
@@ -827,7 +850,7 @@ def main():
                     'filters': {
                         flt: {
                             'threshold': FILTERS.get(t['model'], FILTERS.get(
-                                'corners_under', {})
+                                'corners_over', {})
                             ).get(flt.replace('min_', 'min_').replace('max_', 'max_'), None),
                             'value': (t['score'] if flt == 'min_score' else t['odds']),
                             'passed': True,
