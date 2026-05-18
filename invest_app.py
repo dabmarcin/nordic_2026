@@ -155,7 +155,7 @@ body {
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data
+@st.cache_data(ttl=60)
 def load_portfolio():
     """Load portfolio CSV + scorer data to match nordic_app statistics."""
     # Load portfolio CSV
