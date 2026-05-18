@@ -565,40 +565,108 @@ else:
 
 st.markdown("---")
 
-# Detailed Table with CSV Export
-st.markdown("### 📋 Szczegółowa Tabela")
+# Daily Predictions Preview
+st.markdown("### 📋 Podgląd Predykcji Dnia")
 
-with st.expander("Pełna historia zakładów", expanded=False):
-    if not df_filtered.empty:
-        # Display columns
-        display_cols = ['Data', 'Godzina', 'Liga', 'Mecz', 'Signal_Label', 'Typ', 'Tier',
-                       'Kurs', 'Stake_PLN', 'Wynik', 'Profit_PLN']
+# Get available dates from portfolio files
+available_dates = sorted(
+    [f.replace(os.path.join(PORTFOLIO_DIR, 'portfolio_'), '').replace('.csv', '')
+     for f in glob.glob(os.path.join(PORTFOLIO_DIR, 'portfolio_*.csv'))],
+    reverse=True
+)
 
-        df_display = df_filtered[display_cols].copy()
-        df_display = df_display.sort_values('Data', ascending=False)
+if available_dates:
+    selected_date = st.selectbox(
+        "📅 Wybierz datę",
+        options=available_dates,
+        index=0,
+        key='date_selector'
+    )
 
-        # Format for display
-        df_display['Kurs'] = df_display['Kurs'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
-        df_display['Stake_PLN'] = df_display['Stake_PLN'].apply(lambda x: f"{x:.0f}" if pd.notna(x) else "—")
-        df_display['Wynik'] = df_display['Wynik'].apply(lambda x: "✓" if x == 1 else ("✗" if x == 0 else "—"))
-        df_display['Profit_PLN'] = df_display['Profit_PLN'].apply(
-            lambda x: f"<span style='color:green'>+{x:.0f}</span>" if x > 0 else (
-                f"<span style='color:red'>{x:.0f}</span>" if x < 0 else "—"
-            ) if pd.notna(x) else "—"
-        )
+    # Load portfolio for selected date
+    portfolio_file = os.path.join(PORTFOLIO_DIR, f'portfolio_{selected_date}.csv')
+    try:
+        df_day = pd.read_csv(portfolio_file, encoding='utf-8-sig')
 
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        # Ensure required columns exist
+        required_cols = ['Mecz', 'Liga', 'Signal_Label', 'Typ', 'Kurs', 'Rezultat', 'Corners', 'Wynik']
+        for col in required_cols:
+            if col not in df_day.columns:
+                df_day[col] = None
 
-        # CSV export
-        csv = df_filtered[display_cols].to_csv(index=False, encoding='utf-8-sig')
-        st.download_button(
-            label="⬇️ Pobierz CSV",
-            data=csv,
-            file_name=f"portfolio_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.warning("Brak danych do wyświetlenia.")
+        # Convert data types
+        df_day['Kurs'] = pd.to_numeric(df_day['Kurs'], errors='coerce')
+        df_day['Corners'] = pd.to_numeric(df_day['Corners'], errors='coerce')
+        df_day['Wynik'] = pd.to_numeric(df_day['Wynik'], errors='coerce')
+
+        # Sort by match time if available
+        if 'Godzina' in df_day.columns:
+            df_day = df_day.sort_values('Godzina', ascending=True)
+
+        if not df_day.empty:
+            # Display columns
+            display_cols = ['Mecz', 'Liga', 'Signal_Label', 'Typ', 'Kurs', 'Rezultat', 'Corners', 'Wynik']
+            df_display = df_day[display_cols].copy()
+
+            # Format for display
+            df_display['Kurs'] = df_display['Kurs'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+            df_display['Corners'] = df_display['Corners'].apply(lambda x: f"{int(x)}" if pd.notna(x) else "—")
+            df_display['Wynik'] = df_display['Wynik'].apply(lambda x: "✅ Wygrana" if x == 1 else ("❌ Przegrana" if x == 0 else "⏳ Oczekuje"))
+            df_display['Rezultat'] = df_display['Rezultat'].apply(lambda x: str(x) if pd.notna(x) else "—")
+
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # Summary stats for selected day
+            st.markdown("#### 📊 Statystyka Dnia")
+            col1, col2, col3, col4, col5 = st.columns(5)
+
+            df_settled_day = df_day[df_day['Wynik'].isin([0.0, 1.0])]
+
+            with col1:
+                st.metric("Predykcji", len(df_day))
+
+            with col2:
+                settled_count = len(df_settled_day)
+                st.metric("Rozliczonych", settled_count)
+
+            with col3:
+                if len(df_settled_day) > 0:
+                    win_count = (df_settled_day['Wynik'] == 1).sum()
+                    win_rate = (win_count / len(df_settled_day) * 100)
+                    st.metric("Win Rate", f"{win_rate:.1f}%")
+                else:
+                    st.metric("Win Rate", "—")
+
+            with col4:
+                avg_odds = df_day['Kurs'].mean()
+                if pd.notna(avg_odds):
+                    st.metric("Śr. Kurs", f"{avg_odds:.2f}")
+                else:
+                    st.metric("Śr. Kurs", "—")
+
+            with col5:
+                if 'Profit_PLN' in df_day.columns:
+                    total_profit = pd.to_numeric(df_day['Profit_PLN'], errors='coerce').sum()
+                    st.metric("Zysk/Strata", f"{total_profit:+.0f} PLN",
+                             delta_color="inverse" if total_profit > 0 else "normal")
+                else:
+                    st.metric("Zysk/Strata", "—")
+
+            # CSV export
+            csv = df_day[display_cols].to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="⬇️ Pobierz CSV",
+                data=csv,
+                file_name=f"portfolio_predictions_{selected_date}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info(f"Brak danych dla dnia {selected_date}")
+
+    except Exception as e:
+        st.error(f"❌ Błąd ładowania danych: {str(e)}")
+else:
+    st.warning("Brak dostępnych dat w portfolio.")
 
 st.markdown("---")
 

@@ -2272,6 +2272,54 @@ with tabs[6]:
 
     st.divider()
 
+    # ── Portfolio Scorer ──────────────────────────────────────────────────────
+    st.subheader("💼 Portfolio")
+
+    col_p1, col_p2 = st.columns(2)
+
+    with col_p1:
+        if st.button("📊 Generuj sygnały", key="btn_portfolio_daily"):
+            port_day = st.session_state.get("portfolio_day", "today")
+            port_date = (
+                datetime.now().strftime("%Y-%m-%d")
+                if port_day == "today"
+                else (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            )
+            with st.spinner(f"Generuję sygnały portfolio na {port_date}..."):
+                rc, out, err = run_script("portfolio_scorer.py", [
+                    port_day,
+                    "--debug"
+                ])
+            if rc == 0:
+                st.success(f"Sygnały portfolio na {port_date} gotowe!")
+                st.rerun()
+            else:
+                st.error("Błąd portfolio scorera")
+                st.code(err[-500:])
+            with st.expander("Log portfolio"):
+                st.code(out[-1500:])
+
+        st.caption("💡 Generuje sygnały dla dnia wybranego powyżej (Dziś / Jutro)")
+
+    with col_p2:
+        if st.button("⏮️  Backfill portfolio (historyczne)", key="btn_portfolio_backfill"):
+            with st.spinner("Backfill portfolio (może potrwać 2-3 min)..."):
+                rc, out, err = run_script("portfolio_scorer.py", ["--backfill", "--debug"])
+            if rc == 0:
+                st.success("Backfill portfolio zakończony!")
+                st.rerun()
+            else:
+                st.error("Błąd backfill")
+                st.code(err[-500:])
+            with st.expander("Log backfill"):
+                important = [
+                    l for l in out.split("\n")
+                    if any(k in l for k in ["Backfill", "Wczytano", "Zapisano", "──"])
+                ]
+                st.code("\n".join(important[-30:]))
+
+    st.divider()
+
     # ── Modele ────────────────────────────────────────────────────────────────
     st.subheader("🧠 Modele ML")
 
@@ -2307,52 +2355,6 @@ with tabs[6]:
                 st.error("Błąd treningu")
             with st.expander("Log"):
                 st.code(out[-3000:])
-
-    st.divider()
-
-    # ── Portfolio Scorer ──────────────────────────────────────────────────────
-    st.subheader("💼 Portfolio")
-
-    col_p1, col_p2 = st.columns(2)
-
-    with col_p1:
-        if st.button("📊 Generuj sygnały dzisiaj", key="btn_portfolio_daily"):
-            port_day = st.session_state.get("portfolio_day", "today")
-            port_date = (
-                datetime.now().strftime("%Y-%m-%d")
-                if port_day == "today"
-                else (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            )
-            with st.spinner(f"Generuję sygnały portfolio na {port_date}..."):
-                rc, out, err = run_script("portfolio_scorer.py", [
-                    port_day,
-                    "--debug"
-                ])
-            if rc == 0:
-                st.success(f"Sygnały portfolio na {port_date} gotowe!")
-                st.rerun()
-            else:
-                st.error("Błąd portfolio scorera")
-                st.code(err[-500:])
-            with st.expander("Log portfolio"):
-                st.code(out[-1500:])
-
-    with col_p2:
-        if st.button("⏮️  Backfill portfolio (historyczne)", key="btn_portfolio_backfill"):
-            with st.spinner("Backfill portfolio (może potrwać 2-3 min)..."):
-                rc, out, err = run_script("portfolio_scorer.py", ["--backfill", "--debug"])
-            if rc == 0:
-                st.success("Backfill portfolio zakończony!")
-                st.rerun()
-            else:
-                st.error("Błąd backfill")
-                st.code(err[-500:])
-            with st.expander("Log backfill"):
-                important = [
-                    l for l in out.split("\n")
-                    if any(k in l for k in ["Backfill", "Wczytano", "Zapisano", "──"])
-                ]
-                st.code("\n".join(important[-30:]))
 
     st.divider()
 
