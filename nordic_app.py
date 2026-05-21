@@ -2222,6 +2222,17 @@ with tabs[6]:
             rc, out, err = run_script("nordic_scorer.py", args)
         if rc == 0:
             st.success("Predykcje Nordic gotowe!")
+
+            # Automatyczne uruchomienie portfolio_scorer po Nordic
+            with st.spinner("Aktualizuję portfolio scorer..."):
+                rc_port, out_port, err_port = run_script("portfolio_scorer.py", [day_score, "--debug"])
+            if rc_port == 0:
+                st.success("✅ Portfolio scorer zaktualizowany")
+            else:
+                st.warning("⚠️ Portfolio scorer — błąd")
+                with st.expander("Błąd portfolio"):
+                    st.code(err_port[-500:])
+
             st.rerun()
         else:
             st.error("Błąd scorera Nordic")
@@ -2242,6 +2253,17 @@ with tabs[6]:
                 rc, out, err = run_script("mls_scorer.py", [day_score, "--debug"])
             if rc == 0:
                 st.success("Predykcje MLS gotowe!")
+
+                # Automatyczne uruchomienie portfolio_scorer po MLS
+                with st.spinner("Aktualizuję portfolio scorer..."):
+                    rc_port, out_port, err_port = run_script("portfolio_scorer.py", [day_score, "--debug"])
+                if rc_port == 0:
+                    st.success("✅ Portfolio scorer zaktualizowany")
+                else:
+                    st.warning("⚠️ Portfolio scorer — błąd")
+                    with st.expander("Błąd portfolio"):
+                        st.code(err_port[-500:])
+
                 st.rerun()
             else:
                 st.error("Błąd MLS scorera")
@@ -2259,6 +2281,17 @@ with tabs[6]:
                 rc, out, err = run_script("csl_scorer.py", [day_score, "--debug"])
             if rc == 0:
                 st.success("Predykcje CSL gotowe!")
+
+                # Automatyczne uruchomienie portfolio_scorer po CSL
+                with st.spinner("Aktualizuję portfolio scorer..."):
+                    rc_port, out_port, err_port = run_script("portfolio_scorer.py", [day_score, "--debug"])
+                if rc_port == 0:
+                    st.success("✅ Portfolio scorer zaktualizowany")
+                else:
+                    st.warning("⚠️ Portfolio scorer — błąd")
+                    with st.expander("Błąd portfolio"):
+                        st.code(err_port[-500:])
+
                 st.rerun()
             else:
                 st.error("Błąd CSL scorera")

@@ -335,8 +335,8 @@ tier_filter = st.sidebar.multiselect(
     key='tier_filter'
 )
 
-# Signal filter
-available_signals = sorted(df_portfolio['Signal_ID'].unique())
+# Signal filter — show ALL signals from PORTFOLIO_SIGNALS
+available_signals = sorted(PORTFOLIO_SIGNALS.keys())
 signal_filter = st.sidebar.multiselect(
     "🎲 Sygnały",
     options=available_signals,
@@ -481,7 +481,7 @@ st.markdown("### 🎯 Analiza Sygnałów")
 signal_cols = st.columns(2)
 for idx, signal_id in enumerate(sorted(signal_filter)):
     metrics = get_signal_metrics(df_filtered, signal_id)
-    signal_label = df_filtered[df_filtered['Signal_ID'] == signal_id]['Signal_Label'].iloc[0] if not df_filtered[df_filtered['Signal_ID'] == signal_id].empty else signal_id
+    signal_label = PORTFOLIO_SIGNALS.get(signal_id, {}).get('label', signal_id)
 
     with signal_cols[idx % 2]:
         tier_class = "tier-a" if metrics['tier'] == 'A' else "tier-b"
@@ -522,12 +522,13 @@ st.markdown("### 📈 Krzywa Kapitału Wg Sygnału")
 for signal_id in sorted(signal_filter):
     df_signal_settled = df_settled[df_settled['Signal_ID'] == signal_id].copy()
     if df_signal_settled.empty:
+        st.info(f"ℹ️ **{PORTFOLIO_SIGNALS.get(signal_id, {}).get('label', signal_id)}** — Brak danych")
         continue
 
     df_signal_settled = df_signal_settled.sort_values('Data')
     df_signal_settled['Cumulative_Profit'] = df_signal_settled['Profit_PLN'].cumsum()
 
-    signal_label = df_filtered[df_filtered['Signal_ID'] == signal_id]['Signal_Label'].iloc[0]
+    signal_label = PORTFOLIO_SIGNALS.get(signal_id, {}).get('label', signal_id)
 
     chart = alt.Chart(df_signal_settled).mark_line(point=True, color='#1f77b4').encode(
         x=alt.X('Data:T', title='Data'),

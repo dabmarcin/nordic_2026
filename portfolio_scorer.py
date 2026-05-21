@@ -109,7 +109,7 @@ def find_daily_file(day_arg):
 # ── RULE-BASED SIGNALS ────────────────────────────────────────────────────────
 
 def generate_rule_signals(date_str):
-    """Wygeneruj sygnały rule-based dla MLS i CSL."""
+    """Wygeneruj sygnały rule-based dla MLS, CSL i Nordic lig."""
     signals = []
 
     # Wczytaj daily matches
@@ -125,10 +125,13 @@ def generate_rule_signals(date_str):
         print(f'[WARN] Błąd wczytania daily matches: {e}')
         return signals
 
-    # Filtruj tylko MLS i CSL
-    mls_csl = daily_df[daily_df['competition_id'].isin([MLS_2026_ID, CSL_2026_ID])].copy()
+    # Filtruj MLS, CSL, i Nordic (allsvenskan, eliteserien, veikkausliiga)
+    all_matches = daily_df[daily_df['competition_id'].isin([
+        MLS_2026_ID, CSL_2026_ID,
+        ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID
+    ])].copy()
 
-    for _, row in mls_csl.iterrows():
+    for _, row in all_matches.iterrows():
         try:
             match_id = int(row['id'])
             comp_id = int(row['competition_id'])
@@ -136,9 +139,14 @@ def generate_rule_signals(date_str):
             home_name = str(row.get('home_name', ''))
             away_name = str(row.get('away_name', ''))
 
-            # Wyciągnij godzinę z date_unix — MLS→NY, CSL→Shanghai
+            # Wyciągnij godzinę z date_unix — MLS→NY, CSL→Shanghai, Nordic→UTC
             date_unix = row.get('date_unix', 0)
-            tz_for_league = 'America/New_York' if league == 'mls' else 'Asia/Shanghai'
+            if league == 'mls':
+                tz_for_league = 'America/New_York'
+            elif league == 'csl':
+                tz_for_league = 'Asia/Shanghai'
+            else:  # Nordic: allsvenskan, eliteserien, veikkausliiga
+                tz_for_league = 'UTC'
             kickoff = format_kickoff(date_unix, tz_for_league)
 
             mecz = f'{home_name} vs {away_name}'
@@ -384,9 +392,15 @@ def main_daily(day_arg):
 
 SIGNAL_ODDS_COL = {
     "csl_draw":          "odds_ft_x",
-    "mls_away_win_hi":   "odds_ft_2",
+    "csl_home_win":      "odds_ft_1",
     "csl_under_corners": "odds_corners_under_95",
+    "mls_away_win_hi":   "odds_ft_2",
+    "mls_home_win_hi":   "odds_ft_1",
     "mls_over_corners":  "odds_corners_over_95",
+    "veikk_draw":        "odds_ft_x",
+    "veikk_under25":     "odds_ft_under25",
+    "elite_under25":     "odds_ft_under25",
+    "allsv_under_corners": "odds_corners_under_95",
 }
 
 def safe_float(val, default=0.0):
@@ -410,18 +424,42 @@ def check_signal(signal_id, row) -> float | None:
     """
     if signal_id == "csl_draw":
         k = safe_float(row.get("odds_ft_x"))
-        return k if 3.80 <= k <= 4.50 else None
+        return k if 3.30 <= k <= 4.50 else None
 
-    if signal_id == "mls_away_win_hi":
-        k = safe_float(row.get("odds_ft_2"))
-        return k if 3.80 <= k <= 5.00 else None
+    if signal_id == "csl_home_win":
+        k = safe_float(row.get("odds_ft_1"))
+        return k if 2.50 <= k <= 4.00 else None
 
     if signal_id == "csl_under_corners":
         k = safe_float(row.get("odds_corners_under_95"))
         return k if k >= 2.20 else None
 
+    if signal_id == "mls_away_win_hi":
+        k = safe_float(row.get("odds_ft_2"))
+        return k if 3.50 <= k <= 5.00 else None
+
+    if signal_id == "mls_home_win_hi":
+        k = safe_float(row.get("odds_ft_1"))
+        return k if 2.50 <= k <= 4.00 else None
+
     if signal_id == "mls_over_corners":
         k = safe_float(row.get("odds_corners_over_95"))
+        return k if k >= 1.90 else None
+
+    if signal_id == "veikk_draw":
+        k = safe_float(row.get("odds_ft_x"))
+        return k if 3.30 <= k <= 4.50 else None
+
+    if signal_id == "veikk_under25":
+        k = safe_float(row.get("odds_ft_under25"))
+        return k if 1.90 <= k <= 2.20 else None
+
+    if signal_id == "elite_under25":
+        k = safe_float(row.get("odds_ft_under25"))
+        return k if 2.20 <= k <= 2.80 else None
+
+    if signal_id == "allsv_under_corners":
+        k = safe_float(row.get("odds_corners_under_95"))
         return k if k >= 2.00 else None
 
     return None
@@ -441,16 +479,30 @@ def settle_from_match(signal_id, row) -> tuple:
     wynik = None
     if signal_id == "csl_draw":
         wynik = 1 if hg == ag else 0
-    elif signal_id == "mls_away_win_hi":
-        wynik = 1 if ag > hg else 0
+    elif signal_id == "csl_home_win":
+        wynik = 1 if hg > ag else 0
     elif signal_id == "csl_under_corners":
         if tc < 0:
             return None, None, rezultat, corners
         wynik = 1 if tc <= 9 else 0
+    elif signal_id == "mls_away_win_hi":
+        wynik = 1 if ag > hg else 0
+    elif signal_id == "mls_home_win_hi":
+        wynik = 1 if hg > ag else 0
     elif signal_id == "mls_over_corners":
         if tc < 0:
             return None, None, rezultat, corners
         wynik = 1 if tc > 9 else 0
+    elif signal_id == "veikk_draw":
+        wynik = 1 if hg == ag else 0
+    elif signal_id == "veikk_under25":
+        wynik = 1 if (hg + ag) <= 2 else 0
+    elif signal_id == "elite_under25":
+        wynik = 1 if (hg + ag) <= 2 else 0
+    elif signal_id == "allsv_under_corners":
+        if tc < 0:
+            return None, None, rezultat, corners
+        wynik = 1 if tc <= 9 else 0
     else:
         return None, None, rezultat, corners
 
@@ -468,7 +520,7 @@ def settle_from_match(signal_id, row) -> tuple:
 # ── BACKFILL ──────────────────────────────────────────────────────────────────
 
 def main_backfill():
-    """Backfill dla MLS i CSL z complete matches."""
+    """Backfill dla MLS, CSL i Nordic lig z complete matches."""
     print('══════════════════════════════════════════════════════')
     print('BACKFILL — PORTFOLIO')
     print('══════════════════════════════════════════════════════')
@@ -503,10 +555,56 @@ def main_backfill():
     else:
         print(f'[WARN] Brak {csl_path}')
 
+    # Allsvenskan
+    allsv_path = os.path.join(CURRENT_DIR, 'allsvenskan_matches_2026.csv')
+    allsv_complete = pd.DataFrame()
+    if os.path.exists(allsv_path):
+        try:
+            allsv_df = pd.read_csv(allsv_path, encoding='utf-8-sig')
+            allsv_df = allsv_df[allsv_df['status'] == 'complete'].copy()
+            allsv_complete = allsv_df
+            print(f'Allsvenskan mecze przetworzone: {len(allsv_df)} complete')
+        except Exception as e:
+            print(f'[WARN] Błąd Allsvenskan: {e}')
+    else:
+        print(f'[WARN] Brak {allsv_path}')
+
+    # Eliteserien
+    elite_path = os.path.join(CURRENT_DIR, 'eliteserien_matches_2026.csv')
+    elite_complete = pd.DataFrame()
+    if os.path.exists(elite_path):
+        try:
+            elite_df = pd.read_csv(elite_path, encoding='utf-8-sig')
+            elite_df = elite_df[elite_df['status'] == 'complete'].copy()
+            elite_complete = elite_df
+            print(f'Eliteserien mecze przetworzone: {len(elite_df)} complete')
+        except Exception as e:
+            print(f'[WARN] Błąd Eliteserien: {e}')
+    else:
+        print(f'[WARN] Brak {elite_path}')
+
+    # Veikkausliiga
+    veikk_path = os.path.join(CURRENT_DIR, 'veikkausliiga_matches_2026.csv')
+    veikk_complete = pd.DataFrame()
+    if os.path.exists(veikk_path):
+        try:
+            veikk_df = pd.read_csv(veikk_path, encoding='utf-8-sig')
+            veikk_df = veikk_df[veikk_df['status'] == 'complete'].copy()
+            veikk_complete = veikk_df
+            print(f'Veikkausliiga mecze przetworzone: {len(veikk_df)} complete')
+        except Exception as e:
+            print(f'[WARN] Błąd Veikkausliiga: {e}')
+    else:
+        print(f'[WARN] Brak {veikk_path}')
+
     # Backfill rule signals from complete matches
     backfill_signals = []
 
-    for league, df in [('mls', mls_complete), ('csl', csl_complete)]:
+    for league, df in [
+        ('mls', mls_complete), ('csl', csl_complete),
+        ('allsvenskan', allsv_complete), ('eliteserien', elite_complete),
+        ('veikkausliiga', veikk_complete)
+    ]:
         if df.empty:
             continue
         for _, row in df.iterrows():
@@ -522,7 +620,7 @@ def main_backfill():
                 home_name = str(row.get('home_name', ''))
                 away_name = str(row.get('away_name', ''))
                 mecz = f'{home_name} vs {away_name}'
-                liga_abbr = 'MLS' if league == 'mls' else 'CSL'
+                liga_abbr = LEAGUE_ABBR_MAP.get(league, league.upper()[:3])
 
                 # Sprawdź każdy sygnał
                 for signal_id, signal_cfg in PORTFOLIO_SIGNALS.items():
