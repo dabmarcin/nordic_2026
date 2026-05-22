@@ -413,6 +413,7 @@ tabs = st.tabs([
     "📊 Statystyki",
     "💼 Portfolio",
     "⚙️ Ustawienia",
+    "📖 Instrukcja",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2067,6 +2068,61 @@ with tabs[5]:
 
     st.divider()
 
+    # ── ROZLICZENIE WYNIKÓW (nowa sekcja) ─────────────
+    st.subheader("📋 Rozliczenie wyników — szczegółowy podgląd")
+
+    col_settle_view1, col_settle_view2 = st.columns([2, 2])
+
+    settle_date_view = col_settle_view1.date_input(
+        "Wybierz datę",
+        value=datetime.now().date(),
+        key="settle_date_view",
+    )
+
+    settle_date_view_str = settle_date_view.strftime("%Y-%m-%d")
+
+    if not df_portfolio.empty and "Data" in df_portfolio.columns:
+        # Filtruj zakłady z wybranego dnia
+        df_day_view = df_portfolio[df_portfolio["Data"] == settle_date_view_str].copy()
+
+        if not df_day_view.empty:
+            st.success(f"✅ Znaleziono {len(df_day_view)} zakładów na dzień {settle_date_view_str}")
+
+            # Wyświetl zakłady
+            cols_day_view = [
+                c for c in [
+                    "Godzina", "Mecz", "Liga", "Signal_Label", "Typ",
+                    "Kurs", "Stake_PLN", "Wynik", "Rezultat", "Profit_PLN"
+                ]
+                if c in df_day_view.columns
+            ]
+            st.dataframe(df_day_view[cols_day_view], use_container_width=True, hide_index=True)
+
+            # Oblicz i wyświetl KPI dla tego dnia
+            st.divider()
+            st.subheader("📊 Podsumowanie dnia")
+
+            wynik_day_view = pd.to_numeric(df_day_view["Wynik"], errors="coerce")
+            df_day_settled_view = df_day_view[wynik_day_view.isin([0.0, 1.0])].copy()
+
+            if not df_day_settled_view.empty:
+                day_view_stats = calc_roi(df_day_settled_view)
+
+                kv1, kv2, kv3, kv4, kv5 = st.columns(5)
+                kv1.metric("Zakłady", day_view_stats["n"])
+                kv2.metric("Win Rate", f"{day_view_stats['win_rate']:.1%}")
+                kv3.metric("Śr. kurs", f"{day_view_stats['avg_kurs']:.2f}")
+                kv4.metric("ROI", f"{day_view_stats['roi_pct']:+.1f}%")
+                kv5.metric("Profit", f"{day_view_stats['total_profit']:+.1f} PLN")
+            else:
+                st.info(f"Brak rozliczonych zakładów na {settle_date_view_str}")
+        else:
+            st.info(f"Brak zakładów na dzień {settle_date_view_str}")
+    else:
+        st.info("Brak danych portfolio lub brak kolumny 'Data'")
+
+    st.divider()
+
     # ── Statystyki portfolio ──────────────────────
     st.subheader("📈 Statystyki")
 
@@ -2511,3 +2567,198 @@ with tabs[6]:
     st.caption(
         f"Cache: {n_details} szczegółów meczu | {n_gpt_files} analiz GPT"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 8 — INSTRUKCJA
+# ═══════════════════════════════════════════════════════════════════════════════
+with tabs[7]:
+
+    st.markdown("# 📖 Instrukcja obsługi")
+    st.caption("Nordic 2026 · MLS · CSL · Portfolio · Monitor")
+
+    # ── CODZIENNY PIPELINE ────────────────
+    st.markdown("## 🌅 Codzienny pipeline")
+    st.markdown("*Uruchamiaj wieczorem — predykcje na następny dzień*")
+
+    st.code("""
+# 1. Pobierz dane (kursy, teams)
+python fetch_data.py --daily
+
+# 2. Generuj predykcje ML
+python nordic_scorer.py tomorrow
+python mls_scorer.py tomorrow
+python csl_scorer.py tomorrow
+
+# 3. Generuj sygnały portfolio
+python portfolio_scorer.py tomorrow
+# → automatycznie uruchamia monitor.py --check
+
+# 4. Podgląd predykcji
+# nordic_app.py → zakładka Mecze
+# invest_app.py → zakładka Monitor
+""", language="bash")
+
+    st.info("💡 W Ustawieniach możesz uruchomić wszystkie scorery jednym przyciskiem.")
+
+    st.divider()
+
+    # ── ROZLICZANIE ───────────────────────
+    st.markdown("## ✅ Rozliczanie wyników")
+    st.markdown("*Po zakończeniu meczów*")
+
+    st.code("""
+# Rozlicz wyniki ML (Nordic/MLS/CSL)
+# nordic_app.py → zakładka Wyniki
+# → przycisk "Rozlicz wyniki"
+
+# Rozlicz portfolio
+# nordic_app.py → zakładka Portfolio
+# → przycisk "Pobierz z API i rozlicz"
+
+# Sprawdź monitor po rozliczeniu
+python monitor.py --check
+""", language="bash")
+
+    st.divider()
+
+    # ── TYGODNIOWY RETREN ─────────────────
+    st.markdown("## 🔄 Tygodniowy retren")
+    st.markdown("*Raz w tygodniu — po weekendowych kolejkach*")
+
+    st.code("""
+# Pobierz aktualne dane sezonu 2026
+python fetch_data.py --weekly
+
+# Przebuduj dataset (wszystkie ligi)
+python build_dataset.py --league all --debug
+
+# Wytrenuj modele
+python train_models.py --league all --debug
+
+# Lub jednym przyciskiem:
+# nordic_app.py → Ustawienia
+# → "Uruchom tygodniowy retren"
+""", language="bash")
+
+    st.divider()
+
+    # ── MONITOR SYGNAŁÓW ──────────────────
+    st.markdown("## 🔔 Monitor sygnałów")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Sprawdź status")
+        st.code("""
+python monitor.py --check
+python monitor.py --check --debug
+python monitor.py --history
+""", language="bash")
+
+    with col2:
+        st.markdown("### Zarządzaj sygnałami")
+        st.code("""
+# Wyłącz sygnał
+python monitor.py --disable {signal_id}
+
+# Włącz sygnał
+python monitor.py --enable {signal_id}
+
+# Lub przez invest_app.py
+# → zakładka Monitor
+# → Zarządzaj Sygnałami
+""", language="bash")
+
+    st.markdown("""
+**Progi alertów:**
+| Status | Warunek |
+|---|---|
+| 🟡 WARNING | Rolling 6 ROI < -5% lub 3 straty z rzędu |
+| 🔴 ALARM | Rolling 6 ROI < -10% lub 5 strat z rzędu |
+| 🔵 KANDYDAT | Nowy sygnał rolling > +10% przy n≥6 |
+| ⚫ DISABLED | Ręcznie wyłączony — nadal monitorowany |
+""")
+
+    st.divider()
+
+    # ── DODAWANIE NOWEJ LIGI ──────────────
+    st.markdown("## ➕ Dodawanie nowej ligi")
+
+    st.markdown("Przy dodawaniu nowej ligi podaj Claude Code następujące informacje:")
+
+    st.code("""
+Dodaj ligę [NAZWA].
+Postępuj wg ADD_LEAGUE_INSTRUCTIONS.md.
+
+LEAGUE_KEY    = "nazwa_klucz"
+LEAGUE_NAME   = "Pełna Nazwa Ligi"
+LEAGUE_SHORT  = "SKRÓT"
+TIMEZONE      = "Europe/Berlin"
+
+Sezony historyczne:
+  2023: ID=XXXX
+  2024: ID=XXXX
+  2025: ID=XXXX
+
+Aktywny 2026: ID=XXXX
+
+Sygnały portfolio (opcjonalnie):
+  - Draw kurs 3.50-4.50
+  - Away Win kurs 4.00-5.50
+
+P_EMPIRICAL_CORNERS = 0.65  (jeśli liga ofensywna)
+P_EMPIRICAL_OVER25  = 0.68  (jeśli liga ofensywna)
+""", language="text")
+
+    st.divider()
+
+    # ── STRUKTURA KATALOGÓW ───────────────
+    st.markdown("## 📁 Struktura katalogów")
+
+    st.code("""
+nordic_2026/
+├── nordic_scorer.py      ← predykcje Nordic ML
+├── mls_scorer.py         ← predykcje MLS ML
+├── csl_scorer.py         ← predykcje CSL ML
+├── portfolio_scorer.py   ← sygnały portfelowe
+├── monitor.py            ← monitor sygnałów
+├── nordic_app.py         ← główna aplikacja
+├── invest_app.py         ← dashboard inwestorski
+├── fetch_data.py         ← pobieranie danych API
+├── build_dataset.py      ← budowanie datasetu
+├── train_models.py       ← trening modeli ML
+├── online_settle.py      ← rozliczanie wyników
+│
+├── data/
+│   ├── historical/       ← dane treningowe
+│   ├── current/          ← dane bieżącego sezonu
+│   ├── daily/            ← today/tomorrow mecze
+│   ├── telemetry/        ← pliki scorerów ML
+│   ├── portfolio/        ← zakłady portfelowe
+│   └── monitor/          ← raporty monitora
+│
+└── ml_models/
+    ├── allsvenskan/
+    ├── eliteserien/
+    ├── veikkausliiga/
+    ├── mls/
+    └── csl/
+""", language="text")
+
+    st.divider()
+
+    # ── SZYBKIE KOMENDY ───────────────────
+    st.markdown("## ⚡ Szybkie komendy")
+
+    st.markdown("""
+| Cel | Komenda |
+|---|---|
+| Dane na dziś | `python fetch_data.py --daily` |
+| Predykcje jutro | `python nordic_scorer.py tomorrow` |
+| Portfolio jutro | `python portfolio_scorer.py tomorrow` |
+| Monitor | `python monitor.py --check` |
+| Retren wszystkich | `python train_models.py --league all` |
+| Dashboard główny | `streamlit run nordic_app.py` |
+| Dashboard invest | `streamlit run invest_app.py --server.port 8502` |
+""")

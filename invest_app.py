@@ -18,18 +18,43 @@ import numpy as np
 import altair as alt
 from datetime import datetime, timedelta
 import glob
+import json
 import os
 from pathlib import Path
+import subprocess
+import time
 
 # Add script directory to path
 SCRIPT_DIR = Path(__file__).parent.absolute()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from nordic_config import (
-    PORTFOLIO_DIR, PORTFOLIO_SIGNALS,
+    PORTFOLIO_DIR, PORTFOLIO_SIGNALS, CUSTOM_SIGNALS_FILE,
     ALLSV_SCORER_DIR, ELITE_SCORER_DIR, VEIKK_SCORER_DIR,
     MLS_SCORER_DIR, CSL_SCORER_DIR,
+    DATA_DIR,
 )
+
+MONITOR_DIR = os.path.join(DATA_DIR, "monitor")
+
+def _load_custom_signals_local() -> dict:
+    """Wczytaj custom signals z JSON dla UI."""
+    if not os.path.isfile(CUSTOM_SIGNALS_FILE):
+        return {}
+    try:
+        with open(CUSTOM_SIGNALS_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _all_signals_local() -> dict:
+    """Built-in + custom signals (dla list w UI)."""
+    merged = dict(PORTFOLIO_SIGNALS)
+    for sid, cfg in _load_custom_signals_local().items():
+        if sid not in merged:
+            merged[sid] = {**cfg, 'is_custom': True}
+    return merged
 
 # Streamlit page config
 st.set_page_config(
@@ -157,7 +182,7 @@ body {
 
 @st.cache_data(ttl=60)
 def load_portfolio():
-    """Load portfolio CSV + scorer data to match nordic_app statistics."""
+    """Load portfolio CSV only (scorer data already synced via sync_portfolio_with_scorers.py)."""
     # Load portfolio CSV
     portfolio_dfs = []
     for file in glob.glob(os.path.join(PORTFOLIO_DIR, "portfolio_*.csv")):
@@ -167,49 +192,10 @@ def load_portfolio():
         except Exception:
             pass
 
-    # Load scorer data (allsvenskan + eliteserien)
-    scorer_dfs = []
-
-    # Allsvenskan BTTS Yes (gpt_pred)
-    for file in glob.glob(os.path.join(ALLSV_SCORER_DIR, "allsvenskan_scorer_*.csv")):
-        try:
-            df = pd.read_csv(file, encoding='utf-8-sig')
-            df_btts = df[(df.get('Model_type') == 'gpt_pred') & (df.get('Typ') == 'BTTS Yes')].copy()
-            if not df_btts.empty:
-                df_btts['Liga'] = 'Allsvenskan'
-                df_btts['Signal_ID'] = 'allsv_btts_yes'
-                df_btts['Signal_Label'] = 'Allsvenskan GPT BTTS Yes'
-                df_btts['Tier'] = 'B'
-                df_btts['Source'] = 'scorer'
-                df_btts['Stake_PLN'] = 100.0
-                scorer_dfs.append(df_btts[['ID', 'Data', 'Godzina', 'Mecz', 'Liga', 'Signal_ID', 'Signal_Label',
-                                           'Tier', 'Source', 'Typ', 'Kurs', 'Stake_PLN', 'Wynik', 'Profit_PLN']])
-        except Exception:
-            pass
-
-    # Eliteserien Under 9.5 Corners (liga)
-    for file in glob.glob(os.path.join(ELITE_SCORER_DIR, "eliteserien_scorer_*.csv")):
-        try:
-            df = pd.read_csv(file, encoding='utf-8-sig')
-            df_under = df[(df.get('Model_type') == 'liga') & (df.get('Typ') == 'Under 9.5 corners')].copy()
-            if not df_under.empty:
-                df_under['Liga'] = 'Eliteserien'
-                df_under['Signal_ID'] = 'elite_under_corners'
-                df_under['Signal_Label'] = 'Eliteserien ML Under 9.5C'
-                df_under['Tier'] = 'B'
-                df_under['Source'] = 'scorer'
-                df_under['Stake_PLN'] = 100.0
-                scorer_dfs.append(df_under[['ID', 'Data', 'Godzina', 'Mecz', 'Liga', 'Signal_ID', 'Signal_Label',
-                                            'Tier', 'Source', 'Typ', 'Kurs', 'Stake_PLN', 'Wynik', 'Profit_PLN']])
-        except Exception:
-            pass
-
-    # Combine all data
-    all_dfs = portfolio_dfs + scorer_dfs
-    if not all_dfs:
+    if not portfolio_dfs:
         return pd.DataFrame()
 
-    df = pd.concat(all_dfs, ignore_index=True)
+    df = pd.concat(portfolio_dfs, ignore_index=True)
 
     # Ensure required columns exist
     required_cols = ['ID', 'Data', 'Godzina', 'Mecz', 'Liga', 'Signal_ID', 'Signal_Label',
@@ -319,8 +305,15 @@ if df_portfolio.empty:
     st.error("❌ Brak danych w portfolio. Uruchom portfolio_scorer.py aby wygenerować sygnały.")
     st.stop()
 
-# Sidebar filters
-st.sidebar.markdown("### 🎯 Filtry")
+# Tab selector
+tab_dashboard, tab_monitor = st.tabs(["📊 Dashboard", "🔔 Monitor"])
+
+# ── DASHBOARD TAB ──────────────────────────────────────────────────────
+
+with tab_dashboard:
+
+    # Sidebar filters
+    st.sidebar.markdown("### 🎯 Filtry")
 
 # Bankroll and stake info
 bankroll = st.sidebar.number_input("💰 Bankroll (PLN)", value=1000.0, min_value=10.0)
@@ -666,8 +659,257 @@ if available_dates:
 
     except Exception as e:
         st.error(f"❌ Błąd ładowania danych: {str(e)}")
-else:
-    st.warning("Brak dostępnych dat w portfolio.")
+    else:
+        st.warning("Brak dostępnych dat w portfolio.")
+
+# ── MONITOR TAB ────────────────────────────────────────────────────────
+
+with tab_monitor:
+    st.markdown("### 🔔 Signal Monitor")
+
+    # Load latest monitor report
+    monitor_files = sorted(glob.glob(os.path.join(MONITOR_DIR, "monitor_*.json")))
+
+    if not monitor_files:
+        st.info("📋 Brak raportów monitora. Uruchom: `python monitor.py --check`")
+    else:
+        with open(monitor_files[-1], encoding='utf-8') as f:
+            report = json.load(f)
+
+        st.caption(f"Ostatnia aktualizacja: **{report.get('timestamp', '?')}** | Rolling window: **6 zakładów**")
+
+        # ── Run monitor button ──────────────────────────────────
+        if st.button("🔄 Uruchom Monitor Teraz", key="run_monitor_btn"):
+            try:
+                subprocess.run([
+                    "python", "monitor.py", "--check"
+                ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=30)
+                st.success("✅ Monitor zaktualizowany!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Błąd uruchomienia: {str(e)}")
+
+        st.markdown("---")
+
+        # ── Status grid ────────────────────────────────────────
+        st.markdown("#### 📊 Status Sygnałów")
+
+        signals = report.get("signals", {})
+        cols = st.columns(3)
+        colors = {
+            "ACTIVE": ("#10b981", "🟢"),
+            "WARNING": ("#f59e0b", "🟡"),
+            "ALARM": ("#ef4444", "🔴"),
+            "DISABLED": ("#6b7280", "⚫"),
+        }
+
+        for i, (sig_id, sig_data) in enumerate(
+            sorted(signals.items(),
+                   key=lambda x: x[1].get("roi_rolling") or -999,
+                   reverse=True)
+        ):
+            status = sig_data.get("status", "ACTIVE")
+            color, icon = colors.get(status, ("#6b7280", "❓"))
+            roi_r = sig_data.get("roi_rolling")
+            roi_str = f"{roi_r:+.1f}%" if roi_r is not None else "—"
+            last_r = sig_data.get("last_results", "")
+
+            with cols[i % 3]:
+                st.markdown(f"""
+                <div style="background:#1f2937;border:1px solid {color};
+                     border-left:4px solid {color};border-radius:8px;
+                     padding:12px;margin:4px 0">
+                  <div style="font-size:11px;color:#9ca3af;
+                       text-transform:uppercase;letter-spacing:.08em">
+                    {sig_data.get('tier','?')} · {icon} {status}</div>
+                  <div style="font-size:13px;font-weight:700;margin:4px 0;color:#ffffff">
+                    {sig_data.get('label','?')}</div>
+                  <div style="display:flex;justify-content:space-between;font-size:12px;color:#ffffff">
+                    <span>Roll6: <b style="color:{color}">{roi_str}</b></span>
+                    <span>Overall: <b style="color:#ffffff">{sig_data.get('roi_overall',0):+.1f}%</b></span>
+                  </div>
+                  <div style="font-size:11px;color:#9ca3af;margin-top:4px;
+                       letter-spacing:.1em">{last_r}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ── Alerts ─────────────────────────────────────────────
+        alerts = report.get("alerts", [])
+        if alerts:
+            st.markdown("#### ⚡ Aktywne Alerty")
+            for a in alerts:
+                if "ALARM" in a or "🔴" in a:
+                    st.error(a)
+                elif "WARNING" in a or "🟡" in a:
+                    st.warning(a)
+                elif "RE-ENABLE" in a:
+                    st.success(a)
+                else:
+                    st.info(a)
+        else:
+            st.success("✅ Brak alertów — wszystko OK")
+
+        st.markdown("---")
+
+        # ── Candidates ──────────────────────────────────────────
+        candidates = report.get("candidates", [])
+        if candidates:
+            st.markdown("#### 🔵 Kandydaci — Nowe Sygnały")
+
+            cand_new = [c for c in candidates if not c.get("in_portfolio")]
+            cand_existing = [c for c in candidates if c.get("in_portfolio")]
+
+            if cand_new:
+                st.markdown("**Nowe (nie w portfelu) — kliknij ➕ aby dodać na stałe:**")
+                hdr = st.columns([3, 1, 1, 1, 1, 1, 1])
+                hdr[0].markdown("**Sygnał**")
+                hdr[1].markdown("**Liga**")
+                hdr[2].markdown("**Kurs**")
+                hdr[3].markdown("**N**")
+                hdr[4].markdown("**ROI Roll6**")
+                hdr[5].markdown("**Seria**")
+                hdr[6].markdown("**Akcja**")
+
+                for idx, c in enumerate(cand_new):
+                    cols = st.columns([3, 1, 1, 1, 1, 1, 1])
+                    cols[0].text(c.get("label", ""))
+                    cols[1].text(c.get("liga", ""))
+                    cols[2].text(c.get("odds_range", ""))
+                    cols[3].text(str(c.get("n", 0)))
+                    roi_r = c.get("roi_rolling", 0)
+                    cols[4].markdown(f"<span style='color:#10b981'>+{roi_r:.1f}%</span>" if roi_r >= 0 else f"<span style='color:#ef4444'>{roi_r:.1f}%</span>", unsafe_allow_html=True)
+                    cols[5].text(c.get("last_results", ""))
+                    if cols[6].button("➕ Dodaj", key=f"add_cand_{idx}_{c.get('label','')}"):
+                        with st.spinner(f"Dodawanie '{c.get('label')}' do portfela..."):
+                            try:
+                                # 1. Add candidate to custom_signals.json via monitor
+                                subprocess.run([
+                                    sys.executable, "monitor.py", "--add-candidate", c.get("label", "")
+                                ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=15, check=False)
+
+                                # 2. Backfill portfolio with new custom signal
+                                subprocess.run([
+                                    sys.executable, "portfolio_scorer.py", "--backfill"
+                                ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=90, check=False)
+
+                                # 3. Refresh monitor metrics
+                                subprocess.run([
+                                    sys.executable, "monitor.py", "--check"
+                                ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=30, check=False)
+
+                                st.success(f"✓ Dodano: {c.get('label')}\n\nSygnał trafił do custom_signals.json. Portfel przebudowany.")
+                                time.sleep(1)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Błąd: {str(e)}")
+
+            if cand_existing:
+                st.markdown("**Już w portfelu (potwierdzenie):**")
+                df_ce = pd.DataFrame(cand_existing)[[
+                    "label", "roi_rolling", "last_results"
+                ]]
+                df_ce.columns = ["Sygnał", "ROI Roll6", "Seria"]
+                st.dataframe(df_ce, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # ── Signal management ───────────────────────────────────
+        st.markdown("#### ⚙️ Zarządzaj Sygnałami")
+
+        col_d, col_e = st.columns(2)
+
+        _ui_all_signals = _all_signals_local()
+        _ui_signal_keys = sorted(
+            _ui_all_signals.keys(),
+            key=lambda k: (not _ui_all_signals[k].get('is_custom', False), k)
+        )
+
+        def _fmt_sig(sid: str) -> str:
+            cfg = _ui_all_signals.get(sid, {})
+            prefix = '★ ' if cfg.get('is_custom') else ''
+            return f"{prefix}{sid}"
+
+        with col_d:
+            sig_to_disable = st.selectbox(
+                "Wyłącz sygnał",
+                _ui_signal_keys,
+                key="mon_disable_sel",
+                format_func=_fmt_sig,
+            )
+            if st.button("⚫ Wyłącz", key="mon_disable_btn"):
+                with st.spinner("Wyłączanie sygnału i odświeżanie portfela..."):
+                    try:
+                        # 1. Disable signal in state
+                        subprocess.run([
+                            sys.executable, "monitor.py", "--disable", sig_to_disable
+                        ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=10, check=False)
+
+                        # 2. Backfill portfolio to remove unsettled bets for disabled signal
+                        subprocess.run([
+                            sys.executable, "portfolio_scorer.py", "--backfill"
+                        ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=60, check=False)
+
+                        # 3. Update monitor status
+                        subprocess.run([
+                            sys.executable, "monitor.py", "--check"
+                        ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=30, check=False)
+
+                        st.success(f"✓ Wyłączono: {sig_to_disable}\n\nPortfel przebudowany — niezapisane zakłady usunięte.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Błąd: {str(e)}")
+
+        with col_e:
+            sig_to_enable = st.selectbox(
+                "Włącz sygnał",
+                _ui_signal_keys,
+                key="mon_enable_sel",
+                format_func=_fmt_sig,
+            )
+            if st.button("🟢 Włącz", key="mon_enable_btn"):
+                with st.spinner("Włączanie sygnału i odświeżanie portfela..."):
+                    try:
+                        # 1. Enable signal in state
+                        subprocess.run([
+                            sys.executable, "monitor.py", "--enable", sig_to_enable
+                        ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=10, check=False)
+
+                        # 2. Backfill portfolio to regenerate bets for re-enabled signal
+                        subprocess.run([
+                            sys.executable, "portfolio_scorer.py", "--backfill"
+                        ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=60, check=False)
+
+                        # 3. Update monitor status
+                        subprocess.run([
+                            sys.executable, "monitor.py", "--check"
+                        ], cwd=str(SCRIPT_DIR), capture_output=True, timeout=30, check=False)
+
+                        st.success(f"✓ Włączono: {sig_to_enable}\n\nPortfel przebudowany — nowe zakłady dodane z historii.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Błąd: {str(e)}")
+
+        st.markdown("---")
+
+        # ── History ────────────────────────────────────────────
+        with st.expander("📋 Historia Alertów"):
+            for f in sorted(glob.glob(os.path.join(MONITOR_DIR, "monitor_*.json")))[-10:]:
+                try:
+                    with open(f, encoding='utf-8') as fp:
+                        hist = json.load(fp)
+                except Exception:
+                    continue
+
+                ts = hist.get("timestamp", "?")
+                ha = hist.get("alerts", [])
+                if ha:
+                    st.markdown(f"**{ts}**")
+                    for a in ha:
+                        st.text(f"  {a}")
 
 st.markdown("---")
 

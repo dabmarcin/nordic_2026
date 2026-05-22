@@ -236,6 +236,42 @@ PORTFOLIO_SIGNALS = {
         "label":     "Allsvenskan GPT BTTS Yes",
         "tier":      "B",
     },
+    "elite_btts_no": {
+        "league":    "eliteserien",
+        "model_src": "rule",
+        "typ":       "BTTS No",
+        "condition": "odds_btts_no >= 2.60",
+        "odds_col":  "odds_btts_no",
+        "label":     "Eliteserien BTTS No 2.60+",
+        "tier":      "A",
+    },
+    "elite_home_win": {
+        "league":    "eliteserien",
+        "model_src": "rule",
+        "typ":       "Home Win",
+        "condition": "odds_ft_1 >= 1.60 and odds_ft_1 <= 1.90",
+        "odds_col":  "odds_ft_1",
+        "label":     "Eliteserien Home Win 1.60-1.90",
+        "tier":      "A",
+    },
+    "veikk_home_win": {
+        "league":    "veikkausliiga",
+        "model_src": "rule",
+        "typ":       "Home Win",
+        "condition": "odds_ft_1 >= 2.50",
+        "odds_col":  "odds_ft_1",
+        "label":     "Veikkausliiga Home Win 2.50+",
+        "tier":      "B",
+    },
+    "csl_over_corners": {
+        "league":    "csl",
+        "model_src": "rule",
+        "typ":       "Over 9.5 corners",
+        "condition": "odds_corners_over_95 >= 1.90",
+        "odds_col":  "odds_corners_over_95",
+        "label":     "CSL Over 9.5C 1.90+",
+        "tier":      "B",
+    },
 }
 
 PORTFOLIO_FLAT_STAKE = 100.0
@@ -309,6 +345,7 @@ MLS_SCORER_DIR    = os.path.join(TELEMETRY, "MLS scorer")
 CSL_SCORER_DIR    = os.path.join(TELEMETRY, "CSL scorer")
 REPORTS_DIR       = os.path.join(DATA_DIR, "reports")
 PORTFOLIO_DIR     = os.path.join(DATA_DIR, "portfolio")
+CUSTOM_SIGNALS_FILE = os.path.join(PORTFOLIO_DIR, "custom_signals.json")
 MATCH_DETAILS_DIR = os.path.join(DATA_DIR, "match_details")
 MODELS_DIR        = os.path.join(SCRIPT_DIR, "ml_models")
 MODELS_ALLSV      = os.path.join(MODELS_DIR, "allsvenskan")
