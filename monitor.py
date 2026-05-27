@@ -15,6 +15,7 @@ import json
 import os
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from nordic_config import (
@@ -322,6 +323,156 @@ def determine_status(metrics, current_status, user_disabled=False) -> tuple:
 
 # ── CANDIDATE SCANNING ───────────────────────────────────────────────────
 
+# ── MARKETS (z deep_analysis.py) ────────────────────────────────────────
+
+MARKETS = {
+    # ── WYNIK MECZU ─────────────────────
+    "home_win": {
+        "odds_col": "odds_ft_1",
+        "target": lambda r: 1 if r["homeGoalCount"] > r["awayGoalCount"] else 0,
+        "ranges": [
+            (1.05, 1.20), (1.20, 1.35), (1.35, 1.50),
+            (1.50, 1.65), (1.65, 1.80), (1.80, 2.00),
+            (2.00, 2.30), (2.30, 2.70), (2.70, 3.50),
+            (3.50, 6.00),
+        ],
+    },
+    "away_win": {
+        "odds_col": "odds_ft_2",
+        "target": lambda r: 1 if r["awayGoalCount"] > r["homeGoalCount"] else 0,
+        "ranges": [
+            (1.50, 1.80), (1.80, 2.10), (2.10, 2.50),
+            (2.50, 3.00), (3.00, 3.50), (3.50, 4.00),
+            (4.00, 5.00), (5.00, 7.00), (7.00, 15.0),
+        ],
+    },
+    "draw": {
+        "odds_col": "odds_ft_x",
+        "target": lambda r: 1 if r["homeGoalCount"] == r["awayGoalCount"] else 0,
+        "ranges": [
+            (2.50, 2.80), (2.80, 3.10), (3.10, 3.40),
+            (3.40, 3.80), (3.80, 4.20), (4.20, 4.80),
+            (4.80, 6.00), (6.00, 12.0),
+        ],
+    },
+    "dc_1x": {
+        "odds_col": "odds_doublechance_1x",
+        "target": lambda r: 1 if r["homeGoalCount"] >= r["awayGoalCount"] else 0,
+        "ranges": [
+            (1.05, 1.15), (1.15, 1.25), (1.25, 1.40),
+            (1.40, 1.60), (1.60, 1.90),
+        ],
+    },
+    "dc_x2": {
+        "odds_col": "odds_doublechance_x2",
+        "target": lambda r: 1 if r["awayGoalCount"] >= r["homeGoalCount"] else 0,
+        "ranges": [
+            (1.20, 1.40), (1.40, 1.60), (1.60, 1.85),
+            (1.85, 2.20), (2.20, 3.00),
+        ],
+    },
+    "over25": {
+        "odds_col": "odds_ft_over25",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalGoalCount", 0), errors="coerce") > 2.5 else 0,
+        "ranges": [
+            (1.20, 1.35), (1.35, 1.50), (1.50, 1.65),
+            (1.65, 1.80), (1.80, 2.00), (2.00, 2.50),
+        ],
+    },
+    "under25": {
+        "odds_col": "odds_ft_under25",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalGoalCount", 0), errors="coerce") <= 2.5 else 0,
+        "ranges": [
+            (1.40, 1.60), (1.60, 1.80), (1.80, 2.00),
+            (2.00, 2.30), (2.30, 2.70), (2.70, 3.50),
+        ],
+    },
+    "over35": {
+        "odds_col": "odds_ft_over35",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalGoalCount", 0), errors="coerce") > 3.5 else 0,
+        "ranges": [
+            (1.50, 1.75), (1.75, 2.00), (2.00, 2.40),
+            (2.40, 3.00), (3.00, 4.00),
+        ],
+    },
+    "under35": {
+        "odds_col": "odds_ft_under35",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalGoalCount", 0), errors="coerce") <= 3.5 else 0,
+        "ranges": [
+            (1.20, 1.40), (1.40, 1.60), (1.60, 1.85),
+            (1.85, 2.20),
+        ],
+    },
+    "btts_yes": {
+        "odds_col": "odds_btts_yes",
+        "target": lambda r: 1 if str(r.get("btts", "")).lower() in ("true", "1") else 0,
+        "ranges": [
+            (1.25, 1.40), (1.40, 1.55), (1.55, 1.70),
+            (1.70, 1.90), (1.90, 2.20), (2.20, 3.00),
+        ],
+    },
+    "btts_no": {
+        "odds_col": "odds_btts_no",
+        "target": lambda r: 0 if str(r.get("btts", "")).lower() in ("true", "1") else 1,
+        "ranges": [
+            (1.50, 1.70), (1.70, 1.90), (1.90, 2.10),
+            (2.10, 2.40), (2.40, 2.80), (2.80, 4.00),
+        ],
+    },
+    "over_9_5c": {
+        "odds_col": "odds_corners_over_95",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalCornerCount", -1), errors="coerce") > 9.5 else 0,
+        "ranges": [
+            (1.40, 1.55), (1.55, 1.70), (1.70, 1.85),
+            (1.85, 2.00), (2.00, 2.20), (2.20, 3.00),
+        ],
+    },
+    "under_9_5c": {
+        "odds_col": "odds_corners_under_95",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalCornerCount", -1), errors="coerce") <= 9.5 else 0,
+        "ranges": [
+            (1.50, 1.70), (1.70, 1.90), (1.90, 2.10),
+            (2.10, 2.40), (2.40, 2.80), (2.80, 4.00),
+        ],
+    },
+    "over_8_5c": {
+        "odds_col": "odds_corners_over_85",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalCornerCount", -1), errors="coerce") > 8.5 else 0,
+        "ranges": [
+            (1.25, 1.40), (1.40, 1.55), (1.55, 1.75),
+            (1.75, 2.00), (2.00, 2.50),
+        ],
+    },
+    "over_10_5c": {
+        "odds_col": "odds_corners_over_105",
+        "target": lambda r: 1 if pd.to_numeric(r.get("totalCornerCount", -1), errors="coerce") > 10.5 else 0,
+        "ranges": [
+            (1.50, 1.75), (1.75, 2.00), (2.00, 2.30),
+            (2.30, 2.80), (2.80, 4.00),
+        ],
+    },
+    "ht_over15": {
+        "odds_col": "odds_1st_half_over15",
+        "target": lambda r: 1 if (pd.to_numeric(r.get("ht_goals_team_a", 0), errors="coerce") or 0) +
+                                  (pd.to_numeric(r.get("ht_goals_team_b", 0), errors="coerce") or 0) > 1.5 else 0,
+        "ranges": [
+            (1.50, 1.75), (1.75, 2.00), (2.00, 2.30),
+            (2.30, 2.80),
+        ],
+    },
+    "ht_under15": {
+        "odds_col": "odds_1st_half_under15",
+        "target": lambda r: 1 if (pd.to_numeric(r.get("ht_goals_team_a", 0), errors="coerce") or 0) +
+                                  (pd.to_numeric(r.get("ht_goals_team_b", 0), errors="coerce") or 0) <= 1.5 else 0,
+        "ranges": [
+            (1.20, 1.40), (1.40, 1.60), (1.60, 1.85),
+            (1.85, 2.20),
+        ],
+    },
+}
+
+# ── LEGACY TARGET_FUNC (dla CANDIDATE_SCAN) ─────────────
+
 TARGET_FUNC = {
     "home_win": lambda r: 1 if pd.to_numeric(r.get("homeGoalCount", 0), errors="coerce") > pd.to_numeric(r.get("awayGoalCount", 0), errors="coerce") else 0,
     "away": lambda r: 1 if pd.to_numeric(r.get("awayGoalCount", 0), errors="coerce") > pd.to_numeric(r.get("homeGoalCount", 0), errors="coerce") else 0,
@@ -330,6 +481,204 @@ TARGET_FUNC = {
     "btts_no": lambda r: 0 if str(r.get("btts", "")).lower() in ("true", "1") else 1,
     "over_9_5c": lambda r: 1 if pd.to_numeric(r.get("totalCornerCount", 0), errors="coerce") > 9.5 else 0,
 }
+
+# ── MARKET SIMULATE & SCAN ──────────────────────────────────────────────
+
+def simulate(df_liga, odds_col, target_fn, lo, hi, min_n=CANDIDATE_MIN_N, stake=STAKE):
+    """Symuluj stawianie dla danego zakresu kursów. Zwraca dict z metrykami lub None."""
+    if odds_col not in df_liga.columns:
+        return None
+
+    odds = pd.to_numeric(df_liga[odds_col], errors="coerce").replace(0, np.nan)
+    mask = (odds >= lo) & (odds < hi) & odds.notna()
+    sub = df_liga[mask].copy()
+    n = len(sub)
+
+    if n < min_n:
+        return None
+
+    try:
+        sub["wynik"] = sub.apply(target_fn, axis=1)
+    except Exception:
+        return None
+
+    sub["odds_v"] = odds[mask].values
+    sub = sub.sort_values("date_unix", ascending=True) if "date_unix" in sub.columns else sub
+
+    wins = int(sub["wynik"].sum())
+    profit = ((sub["odds_v"] - 1) * stake * sub["wynik"] - stake * (1 - sub["wynik"])).sum()
+    roi = profit / (n * stake) * 100 if n > 0 else 0
+
+    # Rolling ostatnie ROLLING_WINDOW
+    last = sub.tail(ROLLING_WINDOW)
+    if len(last) >= ROLLING_WINDOW:
+        rp = ((last["odds_v"] - 1) * stake * last["wynik"] - stake * (1 - last["wynik"])).sum()
+        roi_r = rp / (ROLLING_WINDOW * stake) * 100
+    else:
+        roi_r = None
+
+    last_results = "".join(["W" if w == 1 else "L" for w in sub.tail(ROLLING_WINDOW)["wynik"]])
+
+    return {
+        "n": n,
+        "wins": wins,
+        "wr": wins / n if n > 0 else 0,
+        "avg_odds": sub["odds_v"].mean(),
+        "roi": round(roi, 1),
+        "roi_rolling": round(roi_r, 1) if roi_r is not None else None,
+        "profit": round(profit, 0),
+        "last": last_results,
+    }
+
+
+def scan_market(min_n=CANDIDATE_MIN_N, min_roi=CANDIDATE_MIN_ROI) -> list:
+    """
+    Skanuje wszystkie mecze complete z CURRENT_DIR
+    per liga × rynek × przedział kursowy.
+    Zwraca listę sygnałów z ROI > min_roi posortowanych po roi_rolling DESC.
+    """
+    league_files = {
+        "allsvenskan": "allsvenskan_matches_2026.csv",
+        "eliteserien": "eliteserien_matches_2026.csv",
+        "veikkausliiga": "veikkausliiga_matches_2026.csv",
+        "mls": "mls_matches_2026.csv",
+        "csl": "csl_matches_2026.csv",
+    }
+
+    all_sigs = get_all_signals()
+    results = []
+
+    for liga, fname in league_files.items():
+        path = os.path.join(CURRENT_DIR, fname)
+        if not os.path.isfile(path):
+            continue
+        try:
+            df = pd.read_csv(path, encoding='utf-8-sig')
+        except Exception:
+            continue
+
+        df = df[df.get("status", "") == "complete"].copy()
+        if df.empty:
+            continue
+
+        for market_key, market_cfg in MARKETS.items():
+            odds_col = market_cfg["odds_col"]
+            target_fn = market_cfg["target"]
+            if odds_col not in df.columns:
+                continue
+
+            for lo, hi in market_cfg["ranges"]:
+                r = simulate(df, odds_col, target_fn, lo, hi, min_n=min_n)
+                if r is None:
+                    continue
+                if r["roi"] < min_roi:
+                    continue
+
+                dup_id = is_duplicate_candidate(
+                    liga, odds_col, market_key, lo, hi, all_sigs)
+
+                label = f"{liga} {market_key} {lo:.2f}-{hi:.2f}"
+
+                results.append({
+                    "liga": liga,
+                    "market": market_key,
+                    "odds_col": odds_col,
+                    "odds_range": f"{lo:.2f}-{hi:.2f}",
+                    "lo": lo,
+                    "hi": hi,
+                    "label": label,
+                    "n": r["n"],
+                    "wr": r["wr"],
+                    "roi_overall": r["roi"],
+                    "roi_rolling": r["roi_rolling"],
+                    "last_results": r["last"],
+                    "avg_odds": r["avg_odds"],
+                    "in_portfolio": dup_id is not None,
+                    "portfolio_signal_id": dup_id,
+                    "alert": (
+                        f"🔵 KANDYDAT: {label} | "
+                        f"rolling={r['roi_rolling']:+.1f}% "
+                        f"({r['last']}) | "
+                        f"overall={r['roi']:+.1f}% "
+                        f"n={r['n']}"
+                    ),
+                })
+
+    results.sort(key=lambda x: x["roi_rolling"] or -999, reverse=True)
+    return results
+
+
+def compare_portfolio_vs_market(df_portfolio, market_results) -> list:
+    """
+    Porównuje aktywne sygnały portfelowe z wynikami skanera rynkowego.
+    Zwraca listę rekomendacji: KEEP / MODIFY / DISABLE / RE-ENABLE / WATCH.
+    """
+    all_sigs = get_all_signals()
+    state = load_state()
+    comparisons = []
+
+    for sig_id, sig_cfg in all_sigs.items():
+        user_disabled = state.get(sig_id, {}).get("disabled", False)
+
+        # Znajdź wynik skanera dla tego sygnału
+        market_match = None
+        for m in market_results:
+            if m.get("portfolio_signal_id") == sig_id:
+                market_match = m
+                break
+
+        metrics = calc_signal_metrics(df_portfolio, sig_id)
+        roi_portfolio = metrics.get("roi_rolling")
+        roi_market = market_match["roi_rolling"] if market_match else None
+
+        # Rekomendacja
+        if user_disabled:
+            if roi_market is not None and roi_market > REENABLE_ROI:
+                rec = "RE-ENABLE"
+                msg = f"Wyłączony sygnał wraca: market rolling={roi_market:+.1f}%"
+            else:
+                rec = "KEEP_DISABLED"
+                msg = "Nadal wyłączony"
+        elif (roi_portfolio is not None and roi_portfolio < -10 and
+              roi_market is not None and roi_market < 0):
+            rec = "DISABLE"
+            msg = f"Portfolio rolling={roi_portfolio:+.1f}% AND market rolling={roi_market:+.1f}% — wyłącz"
+        elif (roi_portfolio is not None and roi_portfolio < -10 and
+              roi_market is not None and roi_market > 5):
+            rec = "MODIFY"
+            msg = f"Portfolio traci ({roi_portfolio:+.1f}%) ale market zarabia ({roi_market:+.1f}%) — zmień zakres"
+        elif (roi_portfolio is not None and roi_portfolio > 0 and
+              roi_market is not None and roi_market > 0):
+            rec = "KEEP"
+            msg = f"Oba dodatnie — trzymaj"
+        else:
+            rec = "WATCH"
+            if roi_portfolio is not None and roi_market is not None:
+                msg = f"Obserwuj — portfolio={roi_portfolio:+.1f}% market={roi_market:+.1f}%"
+            else:
+                msg = "Brak danych skanera"
+
+        comparisons.append({
+            "signal_id": sig_id,
+            "label": sig_cfg["label"],
+            "tier": sig_cfg.get("tier", "B"),
+            "disabled": user_disabled,
+            "roi_portfolio": roi_portfolio,
+            "roi_market": roi_market,
+            "recommendation": rec,
+            "message": msg,
+            "market_match": market_match,
+        })
+
+    # Sortuj: DISABLE/MODIFY najpierw
+    priority = {
+        "DISABLE": 0, "MODIFY": 1,
+        "RE-ENABLE": 2, "WATCH": 3,
+        "KEEP": 4, "KEEP_DISABLED": 5,
+    }
+    comparisons.sort(key=lambda x: priority.get(x["recommendation"], 9))
+    return comparisons
+
 
 def scan_candidates(df_portfolio) -> list:
     league_files = {
@@ -502,11 +851,65 @@ def run_check(debug=False):
             "is_custom": bool(sig_cfg.get("is_custom", False)),
         }
 
-    print('\n  ── KANDYDACI (nowe sygnały) ────────')
+    # ── SEKCJA A: PORTFOLIO vs RYNEK ─────────────────────────────────────
+    print('\n  ── PORTFOLIO vs RYNEK ──────────────')
+    market_results = scan_market(min_n=8, min_roi=5.0)
+    comparisons = compare_portfolio_vs_market(df_all, market_results)
+
+    rec_icons = {
+        "DISABLE": "🔴",
+        "MODIFY": "🟠",
+        "RE-ENABLE": "🔵",
+        "WATCH": "🟡",
+        "KEEP": "🟢",
+        "KEEP_DISABLED": "⚫",
+    }
+
+    for c in comparisons:
+        icon = rec_icons.get(c["recommendation"], "❓")
+        p_str = f"{c['roi_portfolio']:+.1f}%" if c["roi_portfolio"] is not None else "    —  "
+        m_str = f"{c['roi_market']:+.1f}%" if c["roi_market"] is not None else "   —  "
+        print(
+            f'  {c["label"]:<35}'
+            f' {p_str:>9}'
+            f' {m_str:>8}'
+            f'  {icon} {c["recommendation"]}'
+        )
+        if c["recommendation"] in ("DISABLE", "MODIFY", "RE-ENABLE"):
+            alerts.append(f'{c["label"]}: {icon} {c["recommendation"]} — {c["message"]}')
+
+    # ── SEKCJA B: NOWE KANDYDATY Z RYNKU ─────────────────────────────────
+    print('\n  ── NOWE KANDYDATY Z RYNKU ──────────')
+    new_candidates = [
+        m for m in market_results
+        if not m["in_portfolio"]
+        and (m["roi_rolling"] or 0) >= CANDIDATE_MIN_ROI
+    ]
+
+    if not new_candidates:
+        print('  Brak nowych kandydatów powyżej progu.')
+    else:
+        print(f'  {"Kandydat":<40} {"N":>4} {"ROI":>7} {"Roll6":>7} {"Seria":>6}')
+        for c in new_candidates[:15]:
+            print(
+                f'  {c["label"]:<40}'
+                f' {c["n"]:>4}'
+                f' {c["roi_overall"]:>+6.1f}%'
+                f' {c["roi_rolling"]:>+6.1f}%'
+                f' {c["last_results"]:>6}'
+            )
+            alerts.append(c["alert"])
+
+    report["market_scan"] = market_results[:50]
+    report["comparisons"] = comparisons
+    report["new_candidates"] = new_candidates
+
+    # ── LEGACY CANDIDATE SCAN (zachowywane dla kompatybilności) ───────────
+    print('\n  ── KANDYDACI (legacy) ──────────────')
     candidates = scan_candidates(df_all)
 
     if not candidates:
-        print('  Brak kandydatów powyżej progu.')
+        print('  Brak kandydatów legacy powyżej progu.')
     else:
         print(f'  {"Kandydat":<35} {"N":>4} {"ROI":>7} {"Roll6":>7} {"Seria":>6}')
         for c in candidates:

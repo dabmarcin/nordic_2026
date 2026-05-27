@@ -746,6 +746,70 @@ with tab_monitor:
 
         st.markdown("---")
 
+        # ── Portfolio vs Rynek ──────────────────────────────────
+        st.markdown("#### 🔄 Portfolio vs Rynek")
+        st.caption("Porównanie zakładów portfela z tym co rynek oferuje dziś")
+
+        comparisons = report.get("comparisons", [])
+        if comparisons:
+            rec_colors = {
+                "DISABLE": "#ef4444",
+                "MODIFY": "#f97316",
+                "RE-ENABLE": "#3b82f6",
+                "WATCH": "#f59e0b",
+                "KEEP": "#10b981",
+                "KEEP_DISABLED": "#6b7280",
+            }
+            rec_icons_ui = {
+                "DISABLE": "🔴",
+                "MODIFY": "🟠",
+                "RE-ENABLE": "🔵",
+                "WATCH": "🟡",
+                "KEEP": "🟢",
+                "KEEP_DISABLED": "⚫",
+            }
+
+            rows = []
+            for c in comparisons:
+                icon = rec_icons_ui.get(c["recommendation"], "❓")
+                rows.append({
+                    "Sygnał": c["label"],
+                    "Portfolio": f"{c['roi_portfolio']:+.1f}%" if c["roi_portfolio"] is not None else "—",
+                    "Rynek": f"{c['roi_market']:+.1f}%" if c["roi_market"] is not None else "—",
+                    "Akcja": f"{icon} {c['recommendation']}",
+                    "Info": c["message"],
+                })
+
+            df_comp = pd.DataFrame(rows)
+            st.dataframe(
+                df_comp,
+                use_container_width=True,
+                hide_index=True)
+        else:
+            st.info("Uruchom monitor --check aby zobaczyć porównanie")
+
+        st.markdown("#### 🔵 Nowe kandydaty z rynku")
+        new_cands = report.get("new_candidates", [])
+        if new_cands:
+            rows_c = []
+            for c in new_cands[:15]:
+                rows_c.append({
+                    "Liga": c["liga"],
+                    "Sygnał": c["label"],
+                    "N": c["n"],
+                    "ROI": f"{c['roi_overall']:+.1f}%",
+                    "Roll6": f"{c['roi_rolling']:+.1f}%",
+                    "Seria": c["last_results"],
+                })
+            st.dataframe(
+                pd.DataFrame(rows_c),
+                use_container_width=True,
+                hide_index=True)
+        else:
+            st.info("Brak nowych kandydatów powyżej progu")
+
+        st.markdown("---")
+
         # ── Alerts ─────────────────────────────────────────────
         alerts = report.get("alerts", [])
         if alerts:
