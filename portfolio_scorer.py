@@ -768,6 +768,16 @@ def main_backfill():
     # Backfill rule signals from complete matches
     backfill_signals = []
 
+    # Strefy do daty (Polski CEST jak fetcher) i godziny (lokalna ligi, jak daily mode)
+    warsaw_tz = pytz.timezone('Europe/Warsaw')
+    league_tz = {
+        'mls':           'America/New_York',
+        'csl':           'Asia/Shanghai',
+        'allsvenskan':   'UTC',
+        'eliteserien':   'UTC',
+        'veikkausliiga': 'UTC',
+    }
+
     for league, df in [
         ('mls', mls_complete), ('csl', csl_complete),
         ('allsvenskan', allsv_complete), ('eliteserien', elite_complete),
@@ -780,10 +790,13 @@ def main_backfill():
                 match_id = int(row['id'])
                 date_unix = float(row.get('date_unix', 0))
 
-                # Oblicz date_str
-                dt = datetime.datetime.fromtimestamp(date_unix, tz=datetime.timezone.utc)
-                date_str = dt.strftime('%Y-%m-%d')
-                kickoff = dt.strftime('%H:%M')
+                # Data: Europe/Warsaw — zgodna z fetcher i daily mode (zapobiega dublom)
+                dt_utc = datetime.datetime.fromtimestamp(date_unix, tz=datetime.timezone.utc)
+                date_str = dt_utc.astimezone(warsaw_tz).strftime('%Y-%m-%d')
+
+                # Godzina: lokalna ligi — jak daily mode
+                tz_name = league_tz.get(league, 'UTC')
+                kickoff = dt_utc.astimezone(pytz.timezone(tz_name)).strftime('%H:%M')
 
                 home_name = str(row.get('home_name', ''))
                 away_name = str(row.get('away_name', ''))
@@ -856,6 +869,50 @@ def main_backfill():
         if sigs_dedup:
             n_saved, _ = save_portfolio(sigs_dedup, date_str)
             total_saved += n_saved
+
+    # Prewencja cross-file dubli: jeśli ten sam (ID, Signal_ID) istnieje w >1 pliku
+    # (np. po zmianie TZ między poprzednim a obecnym backfill), zostaw późniejszy plik.
+    print('──────────────────────────────────────────────────────')
+    print('Cross-file dedup — usuwanie historycznych dubli...')
+    portfolio_files = sorted(glob.glob(os.path.join(PORTFOLIO_DIR, 'portfolio_*.csv')))
+    all_dfs = []
+    for pf in portfolio_files:
+        try:
+            d = pd.read_csv(pf, encoding='utf-8-sig')
+            d['_pf'] = pf
+            d['_date'] = os.path.basename(pf).replace('portfolio_','').replace('.csv','')
+            all_dfs.append(d)
+        except Exception:
+            continue
+    cross_dup_count = 0
+    if all_dfs:
+        merged = pd.concat(all_dfs, ignore_index=True)
+        gkey = merged.groupby(['ID','Signal_ID'])
+        dup_df = gkey.filter(lambda x: x['_pf'].nunique() > 1)
+        to_drop = []  # (path, ID, Signal_ID)
+        for (mid, sig), grp in dup_df.groupby(['ID','Signal_ID']):
+            dates_sorted = sorted(grp['_date'].unique())
+            for d_old in dates_sorted[:-1]:
+                paths = grp[grp['_date']==d_old]['_pf'].unique().tolist()
+                for p in paths:
+                    to_drop.append((p, mid, sig))
+        from collections import defaultdict as _dd
+        by_path = _dd(list)
+        for p, mid, sig in to_drop:
+            by_path[p].append((mid, sig))
+        for p, keys in by_path.items():
+            try:
+                d = pd.read_csv(p, encoding='utf-8-sig')
+                before = len(d)
+                for mid, sig in keys:
+                    d = d[~((d['ID']==mid) & (d['Signal_ID']==sig))]
+                removed = before - len(d)
+                if removed > 0:
+                    d.to_csv(p, index=False, encoding='utf-8-sig')
+                    cross_dup_count += removed
+            except Exception:
+                continue
+    print(f'  Cross-file duble usunieto: {cross_dup_count}')
 
     # Clean up existing portfolio files: remove unsettled bets for disabled signals
     print('──────────────────────────────────────────────────────')

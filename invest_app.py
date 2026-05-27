@@ -577,10 +577,21 @@ if available_dates:
         key='date_selector'
     )
 
-    # Load portfolio for selected date
-    portfolio_file = os.path.join(PORTFOLIO_DIR, f'portfolio_{selected_date}.csv')
+    # Pobierz dane dla wybranej daty z df_filtered (po filtrach + multiplier)
+    # zeby Statystyka Dnia byla spojna z wykresami i KPI cards
     try:
-        df_day = pd.read_csv(portfolio_file, encoding='utf-8-sig')
+        selected_dt = pd.to_datetime(selected_date)
+        df_day = df_filtered[df_filtered['Data'] == selected_dt].copy()
+
+        # Zastosuj stake multiplier (df_filtered nie ma go zastosowanego)
+        if not df_day.empty and multiplier != 1.0:
+            mask_settled = df_day['Wynik'].isin([0.0, 1.0])
+            df_day.loc[mask_settled, 'Profit_PLN'] = (
+                pd.to_numeric(df_day.loc[mask_settled, 'Profit_PLN'], errors='coerce') * multiplier
+            )
+            df_day.loc[:, 'Stake_PLN'] = (
+                pd.to_numeric(df_day['Stake_PLN'], errors='coerce') * multiplier
+            )
 
         # Ensure required columns exist
         required_cols = ['Mecz', 'Liga', 'Signal_Label', 'Typ', 'Kurs', 'Rezultat', 'Corners', 'Wynik']
@@ -821,15 +832,20 @@ with tab_monitor:
         col_d, col_e = st.columns(2)
 
         _ui_all_signals = _all_signals_local()
+        # Sortuj po label (human-readable), built-in przed custom
         _ui_signal_keys = sorted(
             _ui_all_signals.keys(),
-            key=lambda k: (not _ui_all_signals[k].get('is_custom', False), k)
+            key=lambda k: (
+                _ui_all_signals[k].get('is_custom', False),
+                _ui_all_signals[k].get('label', k),
+            )
         )
 
         def _fmt_sig(sid: str) -> str:
             cfg = _ui_all_signals.get(sid, {})
             prefix = '★ ' if cfg.get('is_custom') else ''
-            return f"{prefix}{sid}"
+            label = cfg.get('label', sid)
+            return f"{prefix}{label}"
 
         with col_d:
             sig_to_disable = st.selectbox(
