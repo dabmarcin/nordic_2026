@@ -23,6 +23,9 @@ from nordic_config import (
     PORTFOLIO_SIGNALS, CUSTOM_SIGNALS_FILE,
     ALLSVENSKAN_2026_ID, ELITESERIEN_2026_ID, VEIKKAUSLIIGA_2026_ID,
     MLS_2026_ID, CSL_2026_ID,
+    HISTORICAL_DIR, LEAGUE_NAMES,
+    ALLSVENSKAN_HISTORICAL, ELITESERIEN_HISTORICAL, VEIKKAUSLIIGA_HISTORICAL,
+    MLS_HISTORICAL, CSL_HISTORICAL,
 )
 
 # ── CONFIGURATION ────────────────────────────────────────────────────────
@@ -154,19 +157,32 @@ def is_duplicate_candidate(liga: str, odds_col: str, target_key: str,
     """
     Czy kandydat duplikuje istniejący sygnał?
     Kryteria: ta sama liga + odds_col + target + overlapping odds range.
+    Dla scorer-based sygnałów (odds_col: None) — matchuj po typ zamiast odds_col.
     Zwraca signal_id duplikatu lub None.
     """
     target_norm = CANDIDATE_TARGET_TO_PORTFOLIO.get(target_key, target_key)
     sigs = all_signals if all_signals is not None else get_all_signals()
+
     for sid, cfg in sigs.items():
         if cfg.get('league') != liga:
             continue
+
+        # Dla scorer-based sygnałów (odds_col: None) — matchuj po typ
+        if cfg.get('model_src') == 'scorer' or cfg.get('odds_col') is None:
+            cfg_typ = cfg.get('typ', '').lower()
+            target_typ = CANDIDATE_TYP_LABEL.get(target_key, target_key).lower()
+            if cfg_typ == target_typ or cfg_typ in target_typ or target_typ in cfg_typ:
+                return sid
+            continue
+
+        # Dla reguł (rule-based) — matchuj po odds_col + target + range
         if cfg.get('odds_col') != odds_col:
             continue
         if _signal_target(cfg) != target_norm:
             continue
         if _ranges_overlap((lo, hi), _signal_odds_range(cfg)):
             return sid
+
     return None
 
 # ── CANDIDATE SCAN CONFIG ────────────────────────────────────────────────
@@ -216,7 +232,10 @@ def load_all_portfolio() -> pd.DataFrame:
         axis=1,
     )
     df_s = df_s.drop_duplicates(subset=["ID", "Signal_ID"], keep="first")
-    df_s = df_s.sort_values("Data").reset_index(drop=True)
+    # Sortuj chronologicznie: Data + Godzina (kickoff) + ID jako stabilny tie-break,
+    # by rolling-okno nie zależało od arbitralnej kolejności zakładów z tej samej daty.
+    sort_keys = [k for k in ["Data", "Godzina", "ID"] if k in df_s.columns]
+    df_s = df_s.sort_values(sort_keys, kind="mergesort").reset_index(drop=True)
     return df_s
 
 # ── METRICS ──────────────────────────────────────────────────────────────
@@ -471,6 +490,28 @@ MARKETS = {
     },
 }
 
+# ── MARKET KEY → TYP MAPPING ────────────────────────────────────────
+
+MARKET_KEY_TO_TYP = {
+    "home_win":    "Home Win",
+    "away_win":    "Away Win",
+    "draw":        "Draw",
+    "dc_1x":       "1X",
+    "dc_x2":       "X2",
+    "over25":      "Over 2.5",
+    "under25":     "Under 2.5",
+    "over35":      "Over 3.5",
+    "under35":     "Under 3.5",
+    "btts_yes":    "BTTS Yes",
+    "btts_no":     "BTTS No",
+    "over_9_5c":   "Over 9.5 corners",
+    "under_9_5c":  "Under 9.5 corners",
+    "over_8_5c":   "Over 8.5 corners",
+    "over_10_5c":  "Over 10.5 corners",
+    "ht_over15":   "HT Over 1.5",
+    "ht_under15":  "HT Under 1.5",
+}
+
 # ── LEGACY TARGET_FUNC (dla CANDIDATE_SCAN) ─────────────
 
 TARGET_FUNC = {
@@ -588,9 +629,11 @@ def scan_market(min_n=CANDIDATE_MIN_N, min_roi=CANDIDATE_MIN_ROI) -> list:
                     "hi": hi,
                     "label": label,
                     "n": r["n"],
+                    "wins": r["wins"],
                     "wr": r["wr"],
                     "roi_overall": r["roi"],
                     "roi_rolling": r["roi_rolling"],
+                    "profit": r["profit"],
                     "last_results": r["last"],
                     "avg_odds": r["avg_odds"],
                     "in_portfolio": dup_id is not None,
@@ -612,6 +655,8 @@ def compare_portfolio_vs_market(df_portfolio, market_results) -> list:
     """
     Porównuje aktywne sygnały portfelowe z wynikami skanera rynkowego.
     Zwraca listę rekomendacji: KEEP / MODIFY / DISABLE / RE-ENABLE / WATCH.
+
+    Dla scorer-based sygnałów (odds_col: None) — szuka best match po typ zamiast signal_id.
     """
     all_sigs = get_all_signals()
     state = load_state()
@@ -622,10 +667,27 @@ def compare_portfolio_vs_market(df_portfolio, market_results) -> list:
 
         # Znajdź wynik skanera dla tego sygnału
         market_match = None
-        for m in market_results:
-            if m.get("portfolio_signal_id") == sig_id:
-                market_match = m
-                break
+
+        # Dla scorer-based — matchuj po typ
+        if sig_cfg.get('model_src') == 'scorer' or sig_cfg.get('odds_col') is None:
+            sig_typ = sig_cfg.get('typ', '').lower()
+            sig_liga = sig_cfg.get('league', '').lower()
+
+            for m in market_results:
+                m_market_key = m.get('market', '')
+                m_market_typ = MARKET_KEY_TO_TYP.get(m_market_key, m_market_key).lower()
+                m_liga = m.get('liga', '').lower()
+
+                # Porównaj ligę i typ
+                if m_liga == sig_liga and (sig_typ == m_market_typ or sig_typ in m_market_typ or m_market_typ in sig_typ):
+                    if market_match is None or m.get('roi_rolling', -999) > market_match.get('roi_rolling', -999):
+                        market_match = m
+        else:
+            # Dla reguł — matchuj po signal_id
+            for m in market_results:
+                if m.get("portfolio_signal_id") == sig_id:
+                    market_match = m
+                    break
 
         metrics = calc_signal_metrics(df_portfolio, sig_id)
         roi_portfolio = metrics.get("roi_rolling")
@@ -658,6 +720,7 @@ def compare_portfolio_vs_market(df_portfolio, market_results) -> list:
             else:
                 msg = "Brak danych skanera"
 
+        mm = market_match or {}
         comparisons.append({
             "signal_id": sig_id,
             "label": sig_cfg["label"],
@@ -668,6 +731,20 @@ def compare_portfolio_vs_market(df_portfolio, market_results) -> list:
             "recommendation": rec,
             "message": msg,
             "market_match": market_match,
+            # Pełne metryki portfolio
+            "p_n": metrics.get("n", 0),
+            "p_win_rate": metrics.get("win_rate", 0),
+            "p_avg_odds": metrics.get("avg_odds", 0),
+            "p_roi_overall": metrics.get("roi_overall", 0),
+            "p_roi_rolling": metrics.get("roi_rolling"),
+            "p_profit": metrics.get("profit_total", 0),
+            # Pełne metryki rynku (skaner)
+            "m_n": mm.get("n"),
+            "m_win_rate": round(mm.get("wr", 0) * 100, 1) if market_match else None,
+            "m_avg_odds": round(mm.get("avg_odds", 0), 2) if market_match else None,
+            "m_roi_overall": mm.get("roi_overall"),
+            "m_roi_rolling": mm.get("roi_rolling"),
+            "m_profit": mm.get("profit"),
         })
 
     # Sortuj: DISABLE/MODIFY najpierw
@@ -1061,6 +1138,340 @@ def add_candidate(label: str) -> str | None:
     print(f'   Liga: {liga} | Kurs: {lo:.2f}-{hi:.2f} | Target: {target_portfolio}')
     return sig_id
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LEAGUE ANALYSIS — prześwietlenie każdej ligi: WSZYSTKIE rynki, WSZYSTKIE sezony
+# (wzór: tournament_analysis.py z mundial_2026, ale per LIGA × SEZON, bez
+#  rozbijania na przedziały kursowe — szukamy długoterminowo zyskownych rynków)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LEAGUE_ANALYSIS_FILE = os.path.join(MONITOR_DIR, "league_analysis.json")
+
+# Min liczba meczów (łącznie, wszystkie sezony) by rynek trafił do zestawienia
+LEAGUE_MIN_N = 20
+# Min liczba meczów w sezonie by liczyć go do "ile sezonów na plusie"
+LEAGUE_MIN_N_SEASON = 8
+
+# Sezony historyczne (2022–2025) per liga; 2026 doklejany z CURRENT_DIR.
+LEAGUE_SEASONS = {
+    "allsvenskan":   ALLSVENSKAN_HISTORICAL,
+    "eliteserien":   ELITESERIEN_HISTORICAL,
+    "veikkausliiga": VEIKKAUSLIIGA_HISTORICAL,
+    "mls":           MLS_HISTORICAL,
+    "csl":           CSL_HISTORICAL,
+}
+
+LEAGUE_2026_ID = {
+    "allsvenskan":   ALLSVENSKAN_2026_ID,
+    "eliteserien":   ELITESERIEN_2026_ID,
+    "veikkausliiga": VEIKKAUSLIIGA_2026_ID,
+    "mls":           MLS_2026_ID,
+    "csl":           CSL_2026_ID,
+}
+
+# ── PEŁNY KATALOG RYNKÓW (wektorowy: df -> bool Series, BEZ przedziałów) ──
+# label, odds_col, target(df) -> bool Series
+LEAGUE_MARKETS = {
+    # ── 1X2 ──
+    "home_win":  ("Home Win (1)",   "odds_ft_1", lambda d: d["_hg"] > d["_ag"]),
+    "draw":      ("Draw (X)",       "odds_ft_x", lambda d: d["_hg"] == d["_ag"]),
+    "away_win":  ("Away Win (2)",   "odds_ft_2", lambda d: d["_ag"] > d["_hg"]),
+    # ── Double chance ──
+    "dc_1x":     ("Double 1X",  "odds_doublechance_1x", lambda d: d["_hg"] >= d["_ag"]),
+    "dc_x2":     ("Double X2",  "odds_doublechance_x2", lambda d: d["_ag"] >= d["_hg"]),
+    "dc_12":     ("Double 12",  "odds_doublechance_12", lambda d: d["_hg"] != d["_ag"]),
+    # ── Gole FT over/under ──
+    "over15":    ("Over 1.5",   "odds_ft_over15",  lambda d: d["_tg"] > 1.5),
+    "over25":    ("Over 2.5",   "odds_ft_over25",  lambda d: d["_tg"] > 2.5),
+    "over35":    ("Over 3.5",   "odds_ft_over35",  lambda d: d["_tg"] > 3.5),
+    "under15":   ("Under 1.5",  "odds_ft_under15", lambda d: d["_tg"] <= 1.5),
+    "under25":   ("Under 2.5",  "odds_ft_under25", lambda d: d["_tg"] <= 2.5),
+    "under35":   ("Under 3.5",  "odds_ft_under35", lambda d: d["_tg"] <= 3.5),
+    # ── BTTS ──
+    "btts_yes":  ("BTTS Yes",   "odds_btts_yes", lambda d: (d["_hg"] > 0) & (d["_ag"] > 0)),
+    "btts_no":   ("BTTS No",    "odds_btts_no",  lambda d: ~((d["_hg"] > 0) & (d["_ag"] > 0))),
+    # ── Clean sheet ──
+    "cs_home":   ("CS Home (gosp. czyste konto)", "odds_team_a_cs_yes", lambda d: d["_ag"] == 0),
+    "cs_away":   ("CS Away (gość czyste konto)",  "odds_team_b_cs_yes", lambda d: d["_hg"] == 0),
+    # ── Win to nil ──
+    "wtn_home":  ("Win to Nil Home", "odds_win_to_nil_1", lambda d: (d["_hg"] > d["_ag"]) & (d["_ag"] == 0)),
+    "wtn_away":  ("Win to Nil Away", "odds_win_to_nil_2", lambda d: (d["_ag"] > d["_hg"]) & (d["_hg"] == 0)),
+    # ── Rożne over/under (wszystkie linie) ──
+    "over_7_5c":  ("Over 7.5 corners",   "odds_corners_over_75",  lambda d: d["_tc"] > 7.5),
+    "over_8_5c":  ("Over 8.5 corners",   "odds_corners_over_85",  lambda d: d["_tc"] > 8.5),
+    "over_9_5c":  ("Over 9.5 corners",   "odds_corners_over_95",  lambda d: d["_tc"] > 9.5),
+    "over_10_5c": ("Over 10.5 corners",  "odds_corners_over_105", lambda d: d["_tc"] > 10.5),
+    "over_11_5c": ("Over 11.5 corners",  "odds_corners_over_115", lambda d: d["_tc"] > 11.5),
+    "under_7_5c":  ("Under 7.5 corners",  "odds_corners_under_75",  lambda d: d["_tc"] <= 7.5),
+    "under_8_5c":  ("Under 8.5 corners",  "odds_corners_under_85",  lambda d: d["_tc"] <= 8.5),
+    "under_9_5c":  ("Under 9.5 corners",  "odds_corners_under_95",  lambda d: d["_tc"] <= 9.5),
+    "under_10_5c": ("Under 10.5 corners", "odds_corners_under_105", lambda d: d["_tc"] <= 10.5),
+    "under_11_5c": ("Under 11.5 corners", "odds_corners_under_115", lambda d: d["_tc"] <= 11.5),
+    # ── Rożne: który zespół więcej ──
+    "corners_home": ("Więcej rożnych: Gosp.", "odds_corners_1", lambda d: d["_tac"] > d["_tbc"]),
+    "corners_draw": ("Rożne remis",            "odds_corners_x", lambda d: d["_tac"] == d["_tbc"]),
+    "corners_away": ("Więcej rożnych: Gość",   "odds_corners_2", lambda d: d["_tbc"] > d["_tac"]),
+    # ── 1. połowa: wynik ──
+    "ht_home":   ("HT Home (1)", "odds_1st_half_result_1", lambda d: d["_hth"] > d["_hta"]),
+    "ht_draw":   ("HT Draw (X)", "odds_1st_half_result_x", lambda d: d["_hth"] == d["_hta"]),
+    "ht_away":   ("HT Away (2)", "odds_1st_half_result_2", lambda d: d["_hta"] > d["_hth"]),
+    # ── 1. połowa: gole ──
+    "1h_over05":  ("HT Over 0.5",  "odds_1st_half_over05",  lambda d: d["_htt"] > 0.5),
+    "1h_over15":  ("HT Over 1.5",  "odds_1st_half_over15",  lambda d: d["_htt"] > 1.5),
+    "1h_under05": ("HT Under 0.5", "odds_1st_half_under05", lambda d: d["_htt"] <= 0.5),
+    "1h_under15": ("HT Under 1.5", "odds_1st_half_under15", lambda d: d["_htt"] <= 1.5),
+    # ── 2. połowa: gole ──
+    "2h_over05":  ("2H Over 0.5",  "odds_2nd_half_over05",  lambda d: d["_sht"] > 0.5),
+    "2h_over15":  ("2H Over 1.5",  "odds_2nd_half_over15",  lambda d: d["_sht"] > 1.5),
+    "2h_under05": ("2H Under 0.5", "odds_2nd_half_under05", lambda d: d["_sht"] <= 0.5),
+    "2h_under15": ("2H Under 1.5", "odds_2nd_half_under15", lambda d: d["_sht"] <= 1.5),
+}
+
+# Market key -> bukmacherski typ (do wykrywania, co już mamy wdrożone w portfolio)
+LEAGUE_MARKET_TYP = {
+    "home_win": "Home Win", "away_win": "Away Win", "draw": "Draw",
+    "over25": "Over 2.5", "under25": "Under 2.5",
+    "btts_yes": "BTTS Yes", "btts_no": "BTTS No",
+    "over_9_5c": "Over 9.5 corners", "under_9_5c": "Under 9.5 corners",
+}
+
+# Zbiór (liga, typ) sygnałów już wdrożonych w portfolio
+DEPLOYED_LEAGUE_TYP = {
+    (cfg.get("league"), cfg.get("typ")) for cfg in PORTFOLIO_SIGNALS.values()
+}
+
+
+def _prep_league_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Filtruj do complete i policz kolumny pochodne potrzebne rynkom."""
+    out = df[df.get("status", "").astype(str).str.lower() == "complete"].copy()
+    if out.empty:
+        return out
+
+    def _num(col):
+        return pd.to_numeric(out.get(col), errors="coerce")
+
+    out["_hg"] = _num("homeGoalCount")
+    out["_ag"] = _num("awayGoalCount")
+    out["_tg"] = _num("totalGoalCount")
+    out["_tg"] = out["_tg"].fillna(out["_hg"] + out["_ag"])
+    out["_tac"] = _num("team_a_corners")
+    out["_tbc"] = _num("team_b_corners")
+    out["_tc"] = _num("totalCornerCount")
+    out["_tc"] = out["_tc"].fillna(out["_tac"] + out["_tbc"])
+    out["_hth"] = _num("ht_goals_team_a")
+    out["_hta"] = _num("ht_goals_team_b")
+    out["_htt"] = (out["_hth"].fillna(0) + out["_hta"].fillna(0))
+    out["_sht"] = out["_tg"] - out["_htt"]
+    return out
+
+
+def _settle_league_market(df, odds_col, target_fn, stake=STAKE):
+    """Rozlicz jeden rynek na całym df (każdy mecz = 1 jednostka po realnym kursie)."""
+    if df.empty or odds_col not in df.columns:
+        return None
+    odds = pd.to_numeric(df[odds_col], errors="coerce")
+    try:
+        target = target_fn(df)
+    except Exception:
+        return None
+    valid = odds.notna() & target.notna() & (odds >= 1.01)
+    n = int(valid.sum())
+    if n == 0:
+        return None
+    o = odds[valid]
+    t = target[valid].astype(float)
+    wins = float(t.sum())
+    ret = float((t * o).sum())
+    return {
+        "n": n,
+        "wins": int(wins),
+        "wr": wins / n,
+        "avg_odds": float(o.mean()),
+        "roi": (ret - n) / n * 100,
+        "profit": (ret - n) * stake,
+    }
+
+
+def _league_profile(df) -> dict:
+    """Profil ligi/sezonu: gole, over2.5, BTTS, rożne, rozkład wyników."""
+    n = len(df)
+    if n == 0:
+        return {}
+    hg, ag = df["_hg"], df["_ag"]
+    return {
+        "n": n,
+        "goals_avg": round(float(df["_tg"].mean()), 2),
+        "over25": round(float((df["_tg"] > 2.5).mean()), 3),
+        "btts": round(float(((hg > 0) & (ag > 0)).mean()), 3),
+        "corners_avg": round(float(df["_tc"].mean()), 1),
+        "home": round(float((hg > ag).mean()), 3),
+        "draw": round(float((hg == ag).mean()), 3),
+        "away": round(float((ag > hg).mean()), 3),
+    }
+
+
+def _load_league_seasons(league: str) -> dict:
+    """Zwróć {year: prepped_df} dla ligi: 2022–2025 z historical, 2026 z current."""
+    frames = {}
+    for s in LEAGUE_SEASONS.get(league, []):
+        path = os.path.join(HISTORICAL_DIR, league,
+                            f"advanced_league_matches_{s['id']}.csv")
+        if not os.path.isfile(path):
+            continue
+        try:
+            df = _prep_league_df(pd.read_csv(path, low_memory=False))
+        except Exception:
+            continue
+        if not df.empty:
+            frames[s["year"]] = df
+
+    # 2026 — świeże dane z CURRENT_DIR
+    path_2026 = os.path.join(CURRENT_DIR, f"{league}_matches_2026.csv")
+    if os.path.isfile(path_2026):
+        try:
+            df = _prep_league_df(pd.read_csv(path_2026, encoding="utf-8-sig"))
+        except Exception:
+            df = pd.DataFrame()
+        if not df.empty:
+            frames[2026] = df
+
+    return frames
+
+
+def analyze_leagues(min_n=LEAGUE_MIN_N, save=True, verbose=True) -> dict:
+    """
+    Prześwietla każdą ligę osobno: wszystkie rynki × wszystkie sezony.
+    Dla każdego rynku liczy łączny ROI/WR oraz ROI per sezon (2022→2026),
+    flagując rynki długoterminowo zyskowne i konsystentne między sezonami.
+    """
+    report = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "stake": STAKE,
+        "min_n": min_n,
+        "leagues": {},
+    }
+
+    for league in LEAGUE_SEASONS:
+        frames = _load_league_seasons(league)
+        if not frames:
+            continue
+
+        years = sorted(frames)
+        all_df = pd.concat(frames.values(), ignore_index=True)
+
+        market_rows = []
+        for key, (label, odds_col, tfn) in LEAGUE_MARKETS.items():
+            comb = _settle_league_market(all_df, odds_col, tfn)
+            if comb is None or comb["n"] < min_n:
+                continue
+
+            by_season = {}
+            seasons_profitable = 0
+            seasons_with_data = 0
+            for y in years:
+                sres = _settle_league_market(frames[y], odds_col, tfn)
+                if sres and sres["n"] >= LEAGUE_MIN_N_SEASON:
+                    seasons_with_data += 1
+                    if sres["roi"] > 0:
+                        seasons_profitable += 1
+                    by_season[str(y)] = {
+                        "roi": round(sres["roi"], 1),
+                        "n": sres["n"],
+                        "wr": round(sres["wr"] * 100, 1),
+                        "profit": round(sres["profit"], 0),
+                    }
+                else:
+                    by_season[str(y)] = None
+
+            consistent = (
+                comb["roi"] > 0
+                and seasons_with_data >= 3
+                and seasons_profitable >= max(3, round(seasons_with_data * 0.6))
+            )
+
+            market_rows.append({
+                "market": key,
+                "label": label,
+                "typ": LEAGUE_MARKET_TYP.get(key),
+                "n": comb["n"],
+                "wins": comb["wins"],
+                "wr": round(comb["wr"] * 100, 1),
+                "avg_odds": round(comb["avg_odds"], 2),
+                "roi": round(comb["roi"], 1),
+                "profit": round(comb["profit"], 0),
+                "by_season": by_season,
+                "seasons_profitable": seasons_profitable,
+                "seasons_with_data": seasons_with_data,
+                "consistent": bool(consistent),
+                "deployed": (league, LEAGUE_MARKET_TYP.get(key)) in DEPLOYED_LEAGUE_TYP,
+            })
+
+        market_rows.sort(key=lambda r: r["roi"], reverse=True)
+
+        report["leagues"][league] = {
+            "name": LEAGUE_NAMES.get(league, league),
+            "years": years,
+            "n_total": len(all_df),
+            "profile": _league_profile(all_df),
+            "profile_by_season": {str(y): _league_profile(frames[y]) for y in years},
+            "markets": market_rows,
+        }
+
+    if save:
+        os.makedirs(MONITOR_DIR, exist_ok=True)
+        with open(LEAGUE_ANALYSIS_FILE, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+
+    if verbose:
+        _print_league_analysis(report)
+
+    return report
+
+
+def _print_league_analysis(report: dict):
+    """Czytelny wydruk konsolowy zestawienia per liga."""
+    print(f'\n{"═" * 100}')
+    print(f'  ANALIZA LIG — zyskowne rynki długoterminowo ({report["timestamp"]})')
+    print(f'  Stawka: {report["stake"]:.0f} PLN/zakład | min N (łącznie): {report["min_n"]}')
+    print(f'{"═" * 100}')
+
+    for league, data in report["leagues"].items():
+        years = data["years"]
+        prof = data.get("profile", {})
+        print(f'\n{"━" * 100}')
+        print(f'  {data["name"].upper()}  ({league})  —  sezony: {", ".join(map(str, years))}  '
+              f'|  meczów: {data["n_total"]}')
+        if prof:
+            print(f'  Profil: gole={prof["goals_avg"]:.2f}  O2.5={prof["over25"]:.0%}  '
+                  f'BTTS={prof["btts"]:.0%}  rożne={prof["corners_avg"]:.1f}  '
+                  f'H={prof["home"]:.0%} D={prof["draw"]:.0%} A={prof["away"]:.0%}')
+        print(f'{"━" * 100}')
+
+        year_hdr = " ".join(f'{y:>7}' for y in years)
+        print(f'  {"Rynek":<22} {"N":>4} {"WR":>5} {"kurs":>5} {"ROI":>7} {"Profit":>8} '
+              f'{"Sez+":>6}  {year_hdr}')
+        print(f'  {"-" * 96}')
+
+        for m in data["markets"]:
+            year_cells = []
+            for y in years:
+                cell = m["by_season"].get(str(y))
+                year_cells.append(f'{cell["roi"]:>+7.0f}' if cell else f'{"—":>7}')
+            flag = ""
+            if m["consistent"]:
+                flag = " 💰" if not m["deployed"] else " ✓"
+            print(f'  {m["label"]:<22} {m["n"]:>4} {m["wr"]:>4.0f}% '
+                  f'{m["avg_odds"]:>5.2f} {m["roi"]:>+6.1f}% {m["profit"]:>8.0f} '
+                  f'{m["seasons_profitable"]}/{m["seasons_with_data"]:<4} '
+                  f'{" ".join(year_cells)}{flag}')
+
+        money = [m for m in data["markets"] if m["consistent"] and not m["deployed"]]
+        if money:
+            print(f'\n  💰 KONSYSTENTNIE ZYSKOWNE (spoza portfolio): '
+                  f'{", ".join(m["label"] for m in money)}')
+
+    print(f'\n{"═" * 100}\n')
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -1074,6 +1485,11 @@ def main():
     parser.add_argument('--enable', type=str, default=None, help='Enable signal')
     parser.add_argument('--add-candidate', type=str, default=None,
                         help='Dodaj kandydata (label z CANDIDATE_SCAN) do custom_signals.json')
+    parser.add_argument('--leagues', action='store_true',
+                        help='Prześwietl każdą ligę: wszystkie rynki × wszystkie sezony '
+                             '(długoterminowo zyskowne rynki, porównanie sezonów)')
+    parser.add_argument('--min-n', type=int, default=LEAGUE_MIN_N,
+                        help=f'Min liczba meczów łącznie dla --leagues (def: {LEAGUE_MIN_N})')
 
     args = parser.parse_args()
 
@@ -1087,6 +1503,8 @@ def main():
         enable_signal(args.enable)
     elif args.add_candidate:
         add_candidate(args.add_candidate)
+    elif args.leagues:
+        analyze_leagues(min_n=args.min_n)
     else:
         run_check(args.debug)
 

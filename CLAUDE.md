@@ -158,6 +158,19 @@ data/telemetry/{league}_scorer/ (daily CSV logs)
   - KPI cards: ROI, Profit, Zakłady, Win Rate, Zainwestowano
   - Visualizations: Equity curve with drawdown, per-signal analysis, daily profit chart
   - Detailed signal table with filtering and CSV export
+  - **3 tabs:** 📊 Dashboard, 🔔 Monitor, 🔍 Analiza Lig
+  - **Analiza Lig tab:** per-league market scan across all seasons (reads `data/monitor/league_analysis.json`)
+    - League selector + season profile (goals, O2.5, BTTS, corners, H/D/A)
+    - Full markets table with overall ROI + per-season ROI columns (2022→2026)
+    - "💰 Konsystentnie zyskowne" cards: markets profitable across most seasons, not yet in portfolio
+    - "🔄 Przelicz analizę lig" button runs `monitor.py --leagues`
+
+- **monitor.py** — Signal health monitor + league market analysis:
+  - `python monitor.py --check` — Rolling ROI / consecutive-loss tracking, portfolio-vs-market scan, candidate detection (writes `data/monitor/monitor_YYYY-MM-DD.json`)
+  - `python monitor.py --leagues [--min-n N]` — **Per-league deep scan** (wzór: `tournament_analysis.py` z mundial_2026): each league examined separately across ALL markets × ALL seasons (2022–2026), WITHOUT odds-range splitting. For every market computes combined ROI/WR plus ROI per season, flagging long-term consistent winners (`seasons_profitable ≥ 60%` and combined ROI > 0). Loads 2022–2025 from `data/historical/{league}/`, 2026 from `data/current/`. Writes `data/monitor/league_analysis.json` (source for invest_app "Analiza Lig" tab)
+  - `python monitor.py --disable/--enable <signal_id>` — Toggle signals
+  - `python monitor.py --add-candidate "<label>"` — Promote candidate to custom signal
+  - `python monitor.py --history` — Show alert history
 
 ## Common Commands
 

@@ -306,7 +306,9 @@ if df_portfolio.empty:
     st.stop()
 
 # Tab selector
-tab_dashboard, tab_monitor = st.tabs(["📊 Dashboard", "🔔 Monitor"])
+tab_dashboard, tab_monitor, tab_leagues = st.tabs(
+    ["📊 Dashboard", "🔔 Monitor", "🔍 Analiza Lig"]
+)
 
 # ── DASHBOARD TAB ──────────────────────────────────────────────────────
 
@@ -769,13 +771,48 @@ with tab_monitor:
                 "KEEP_DISABLED": "⚫",
             }
 
+            def _pct(v):
+                return f"{v:+.1f}%" if v is not None else "—"
+
+            def _num(v):
+                return f"{v:.0f}" if v is not None else "—"
+
+            def _odds(v):
+                return f"{v:.2f}" if v else "—"
+
+            def _wr(v):
+                return f"{v:.0f}%" if v is not None else "—"
+
             rows = []
             for c in comparisons:
                 icon = rec_icons_ui.get(c["recommendation"], "❓")
+
+                # Buduj Sygnał rynek
+                market_match = c.get("market_match")
+                if market_match:
+                    syg_rynek = (f"{market_match['liga']} {market_match['market']} "
+                                f"{market_match['odds_range']}")
+                else:
+                    syg_rynek = "—"
+
                 rows.append({
                     "Sygnał": c["label"],
-                    "Portfolio": f"{c['roi_portfolio']:+.1f}%" if c["roi_portfolio"] is not None else "—",
-                    "Rynek": f"{c['roi_market']:+.1f}%" if c["roi_market"] is not None else "—",
+                    # ── Portfolio ──
+                    "Mecze (P)": _num(c.get("p_n")),
+                    "WR (P)": _wr(c.get("p_win_rate")),
+                    "Kurs (P)": _odds(c.get("p_avg_odds")),
+                    "ROI all (P)": _pct(c.get("p_roi_overall")),
+                    "ROI 6 (P)": _pct(c.get("p_roi_rolling")),
+                    "Profit (P)": _num(c.get("p_profit")),
+                    # ── Rynek ──
+                    "Sygnał rynek": syg_rynek,
+                    "Mecze (R)": _num(c.get("m_n")),
+                    "WR (R)": _wr(c.get("m_win_rate")),
+                    "Kurs (R)": _odds(c.get("m_avg_odds")),
+                    "ROI all (R)": _pct(c.get("m_roi_overall")),
+                    "ROI 6 (R)": _pct(c.get("m_roi_rolling")),
+                    "Profit (R)": _num(c.get("m_profit")),
+                    # ── Decyzja ──
                     "Akcja": f"{icon} {c['recommendation']}",
                     "Info": c["message"],
                 })
@@ -785,6 +822,7 @@ with tab_monitor:
                 df_comp,
                 use_container_width=True,
                 hide_index=True)
+            st.caption("P = Portfolio · R = Rynek (skaner) | ROI 6 = ostatnie 6 zakładów · ROI all = całość")
         else:
             st.info("Uruchom monitor --check aby zobaczyć porównanie")
 
@@ -990,6 +1028,161 @@ with tab_monitor:
                     st.markdown(f"**{ts}**")
                     for a in ha:
                         st.text(f"  {a}")
+
+# ── ANALIZA LIG TAB ────────────────────────────────────────────────────
+# Prześwietlenie każdej ligi: wszystkie rynki × wszystkie sezony.
+# Źródło: data/monitor/league_analysis.json (monitor.py --leagues)
+
+with tab_leagues:
+    st.markdown("### 🔍 Analiza Lig — gdzie długoterminowo są pieniądze")
+    st.caption(
+        "Każda liga prześwietlona osobno: wszystkie rynki na wszystkich sezonach "
+        "(2022–2026), bez rozbijania na przedziały kursowe. ROI per sezon pokazuje, "
+        "co jest powtarzalnie zyskowne."
+    )
+
+    league_file = os.path.join(MONITOR_DIR, "league_analysis.json")
+
+    col_run, col_info = st.columns([1, 3])
+    with col_run:
+        if st.button("🔄 Przelicz analizę lig", key="run_leagues_btn"):
+            with st.spinner("Skanowanie wszystkich rynków i sezonów..."):
+                try:
+                    subprocess.run(
+                        [sys.executable, "monitor.py", "--leagues"],
+                        cwd=str(SCRIPT_DIR), capture_output=True, timeout=180, check=False,
+                    )
+                    st.success("✅ Analiza przeliczona!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Błąd: {str(e)}")
+
+    if not os.path.isfile(league_file):
+        with col_info:
+            st.info("📋 Brak analizy. Kliknij **Przelicz analizę lig** lub uruchom: "
+                    "`python monitor.py --leagues`")
+    else:
+        with open(league_file, encoding="utf-8") as f:
+            league_report = json.load(f)
+
+        with col_info:
+            st.caption(
+                f"Ostatnia aktualizacja: **{league_report.get('timestamp', '?')}** | "
+                f"Stawka: **{league_report.get('stake', 100):.0f} PLN/zakład** | "
+                f"min N (łącznie): **{league_report.get('min_n', 20)}**"
+            )
+
+        leagues_data = league_report.get("leagues", {})
+        if not leagues_data:
+            st.warning("Brak danych lig w raporcie.")
+        else:
+            league_keys = list(leagues_data.keys())
+            sel_league = st.selectbox(
+                "🏆 Wybierz ligę",
+                options=league_keys,
+                format_func=lambda k: leagues_data[k].get("name", k),
+                key="league_sel",
+            )
+
+            ldata = leagues_data[sel_league]
+            years = ldata.get("years", [])
+            prof = ldata.get("profile", {})
+
+            st.markdown(f"#### {ldata.get('name', sel_league)}")
+            st.caption(f"Sezony: {', '.join(map(str, years))} · Meczów łącznie: "
+                       f"{ldata.get('n_total', 0)}")
+
+            # ── Profil ligi ──
+            if prof:
+                pc = st.columns(7)
+                pc[0].metric("Gole/mecz", f"{prof.get('goals_avg', 0):.2f}")
+                pc[1].metric("Over 2.5", f"{prof.get('over25', 0)*100:.0f}%")
+                pc[2].metric("BTTS", f"{prof.get('btts', 0)*100:.0f}%")
+                pc[3].metric("Rożne avg", f"{prof.get('corners_avg', 0):.1f}")
+                pc[4].metric("Home", f"{prof.get('home', 0)*100:.0f}%")
+                pc[5].metric("Draw", f"{prof.get('draw', 0)*100:.0f}%")
+                pc[6].metric("Away", f"{prof.get('away', 0)*100:.0f}%")
+
+            st.markdown("---")
+
+            markets = ldata.get("markets", [])
+
+            # ── Konsystentnie zyskowne (money) ──
+            money = [m for m in markets if m.get("consistent") and not m.get("deployed")]
+            if money:
+                st.markdown("##### 💰 Konsystentnie zyskowne (spoza portfolio)")
+                mc = st.columns(min(4, len(money)))
+                for i, m in enumerate(money):
+                    with mc[i % len(mc)]:
+                        st.markdown(f"""
+                        <div style="background:#f0fdf4;border:1px solid #2ca02c;
+                             border-left:4px solid #2ca02c;border-radius:8px;
+                             padding:12px;margin:4px 0">
+                          <div style="font-size:13px;font-weight:700;color:#166534">
+                            {m['label']}</div>
+                          <div style="display:flex;justify-content:space-between;
+                               font-size:12px;color:#333;margin-top:6px">
+                            <span>ROI <b style="color:#2ca02c">{m['roi']:+.1f}%</b></span>
+                            <span>WR <b>{m['wr']:.0f}%</b></span>
+                            <span>N <b>{m['n']}</b></span>
+                          </div>
+                          <div style="font-size:11px;color:#666;margin-top:4px">
+                            Sezony na plusie: {m['seasons_profitable']}/{m['seasons_with_data']}
+                            · śr. kurs {m['avg_odds']:.2f}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                st.markdown("---")
+
+            # ── Pełna tabela rynków z ROI per sezon ──
+            st.markdown("##### 📊 Wszystkie rynki — ROI per sezon")
+
+            only_profit = st.checkbox("Pokaż tylko rynki z dodatnim ROI (łącznie)",
+                                      value=False, key="lg_only_profit")
+
+            rows = []
+            for m in markets:
+                if only_profit and m["roi"] <= 0:
+                    continue
+                tag = ""
+                if m.get("consistent"):
+                    tag = "✓ portfolio" if m.get("deployed") else "💰"
+                row = {
+                    "Rynek": m["label"],
+                    "N": m["n"],
+                    "WR": f"{m['wr']:.0f}%",
+                    "Śr. kurs": f"{m['avg_odds']:.2f}",
+                    "ROI": m["roi"],
+                    "Profit PLN": m["profit"],
+                    "Sez+": f"{m['seasons_profitable']}/{m['seasons_with_data']}",
+                }
+                for y in years:
+                    cell = m["by_season"].get(str(y))
+                    row[str(y)] = cell["roi"] if cell else None
+                row["Flaga"] = tag
+                rows.append(row)
+
+            if rows:
+                df_markets = pd.DataFrame(rows)
+
+                def _style_roi(v):
+                    if pd.isna(v):
+                        return "color:#bbb"
+                    return f"color:{'#2ca02c' if v > 0 else '#d62728'}"
+
+                roi_cols = ["ROI"] + [str(y) for y in years]
+                styled = (
+                    df_markets.style
+                    .map(_style_roi, subset=roi_cols)
+                    .format({c: "{:+.1f}" for c in roi_cols}, na_rep="—")
+                    .format({"Profit PLN": "{:+,.0f}"})
+                )
+                st.dataframe(styled, use_container_width=True, hide_index=True,
+                             height=min(700, 40 + 35 * len(df_markets)))
+                st.caption("ROI = łączny zwrot (wszystkie sezony) · kolumny lat = ROI% w danym sezonie "
+                           "(— = za mało meczów) · Sez+ = ile sezonów na plusie · "
+                           "💰 = konsystentnie zyskowny spoza portfolio · ✓ = już w portfolio")
+            else:
+                st.info("Brak rynków spełniających kryteria.")
 
 st.markdown("---")
 
